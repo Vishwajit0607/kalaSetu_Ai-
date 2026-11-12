@@ -1,0 +1,27 @@
+{
+  "name": "kalasetu-ai",
+  "private": true,
+  "version": "1.0.0",
+  "description": "KalaSetu AI - voice-first mobile commerce assistant for Indian artisans, weavers and micro-entrepreneurs",
+  "packageManager": "npm@11.6.2",
+  "workspaces": [
+    "apps/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:migrate": "npm run db:migrate --workspace=@kalasetu/api-server"
+  },
+  "devDependencies": {
+    "turbo": "2.3.3",
+    "typescript": "5.6.3",
+    "prettier": "3.3.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
