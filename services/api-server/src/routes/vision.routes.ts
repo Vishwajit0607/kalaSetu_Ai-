@@ -1,11 +1,12 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { Buffer } from 'node:buffer';
 import { z } from 'zod';
-import { editProductPhoto } from '../services/photoroom.service.js';
+import { editStudioPhoto, type StudioEngine, type StudioFallbackReason } from '../services/studio.service.js';
 import {
   downloadMedia,
   removeMedia,
   storagePathFromUrl,
+  supabase,
   uploadMedia,
 } from '../services/supabase.service.js';
 import { UpstreamError } from '../services/http.js';
@@ -50,8 +51,61 @@ const editQuerySchema = z.object({
   previous_enhanced_url: z.string().url().optional(),
 });
 
+const removeSchema = z.object({
+  urls: z.array(z.string().url()).min(1).max(12),
+});
+
 export const visionRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/backdrops', async () => ({ presets: BACKDROPS }));
+
+  /**
+   * POST /v1/vision/media/remove
+   *
+   * Discard photos the artisan took for a draft and then dropped (an extra
+   * angle they removed). Only the caller's own raw/enhanced captures, and never
+   * one a saved product still uses - those are skipped, not an error.
+   */
+  fastify.post('/media/remove', async (request, reply) => {
+    const artisanId = request.artisanId as string;
+    const { urls } = removeSchema.parse(request.body);
+
+    const paths = new Map<string, string>(); // url -> storage path
+    for (const url of urls) {
+      const path = storagePathFromUrl(url, artisanId);
+      if (path?.startsWith(`${artisanId}/raw/`) || path?.startsWith(`${artisanId}/enhanced/`)) {
+        paths.set(url, path);
+      }
+    }
+
+    // Anything a saved product points at stays.
+    const candidates = [...paths.keys()];
+    const inUse = new Set<string>();
+    if (candidates.length > 0) {
+      const list = candidates.map((url) => `"${url}"`).join(',');
+      const { data } = await supabase()
+        .from('products')
+        .select('raw_image_url, enhanced_image_url')
+        .eq('artisan_id', artisanId)
+        .or(`raw_image_url.in.(${list}),enhanced_image_url.in.(${list})`);
+      for (const row of data ?? []) {
+        inUse.add(row.raw_image_url as string);
+        inUse.add(row.enhanced_image_url as string);
+      }
+      // Gallery column may not exist yet; if so there is nothing to protect.
+      const gallery = await supabase()
+        .from('products')
+        .select('gallery_image_urls')
+        .eq('artisan_id', artisanId)
+        .overlaps('gallery_image_urls', candidates);
+      for (const row of gallery.data ?? []) {
+        for (const url of (row.gallery_image_urls as string[] | null) ?? []) inUse.add(url);
+      }
+    }
+
+    const doomed = candidates.filter((url) => !inUse.has(url)).map((url) => paths.get(url) as string);
+    await removeMedia(doomed);
+    return reply.send({ removed: doomed.length, kept: candidates.length - doomed.length });
+  });
 
   /**
    * POST /v1/vision/edit
@@ -101,15 +155,17 @@ export const visionRoutes: FastifyPluginAsync = async (fastify) => {
       rawUrl = stored.publicUrl;
     }
 
-    /* ---- 2. Photoroom ---------------------------------------------------- */
+    /* ---- 2. studio edit (Photoroom, else the local engine) --------------- */
     let enhancedUrl = rawUrl;
     let degraded = false;
     let width = 0;
     let height = 0;
     let applied: string[] = ['passthrough-fallback'];
+    let engine: StudioEngine | 'none' = 'none';
+    let fallbackReason: StudioFallbackReason | undefined;
 
     try {
-      const edited = await editProductPhoto({
+      const edited = await editStudioPhoto({
         imageBuffer: source,
         filename: 'product.jpg',
         mimeType,
@@ -121,18 +177,20 @@ export const visionRoutes: FastifyPluginAsync = async (fastify) => {
       const enhanced = await uploadMedia({
         artisanId,
         kind: 'enhanced',
-        buffer: Buffer.from(edited.image_base64, 'base64'),
-        contentType: 'image/png',
-        extension: 'png',
+        buffer: edited.buffer,
+        contentType: edited.contentType,
+        extension: edited.extension,
       });
 
       enhancedUrl = enhanced.publicUrl;
       width = edited.width;
       height = edited.height;
       applied = edited.applied;
+      engine = edited.engine;
+      fallbackReason = edited.fallbackReason;
     } catch (error) {
-      // Never strand the artisan mid-flow: if the studio is down, hand back
-      // the original (already stored), flagged, so they can carry on and
+      // Never strand the artisan mid-flow: if no studio engine worked, hand
+      // back the original (already stored), flagged, so they can carry on and
       // re-run the edit later.
       if (!(error instanceof UpstreamError)) throw error;
       request.log.warn(
@@ -161,6 +219,8 @@ export const visionRoutes: FastifyPluginAsync = async (fastify) => {
       height,
       applied,
       degraded,
+      engine,
+      fallback_reason: fallbackReason ?? null,
     });
   });
 };

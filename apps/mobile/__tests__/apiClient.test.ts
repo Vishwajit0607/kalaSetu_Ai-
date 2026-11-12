@@ -214,3 +214,52 @@ describe('studio edit request', () => {
     expect((init as { body?: unknown }).body).toBeUndefined();
   });
 });
+
+describe('bazaar requests', () => {
+  const lastUrl = () => new URL(urlOf(fetchMock.mock.calls.at(-1)!));
+
+  beforeEach(async () => {
+    await session.saveSession(freshSession());
+    fetchMock.mockResolvedValue(respond(200, { listings: [], total: 0, offset: 0, has_more: false }));
+  });
+
+  it('asks for a page of 20 from the start by default, with no filters', async () => {
+    await apiClient.api.listings();
+
+    const url = lastUrl();
+    expect(url.pathname).toBe('/v1/marketplace/listings');
+    expect(url.searchParams.get('limit')).toBe('20');
+    expect(url.searchParams.get('offset')).toBe('0');
+    expect(url.searchParams.has('q')).toBe(false);
+    expect(url.searchParams.has('craft')).toBe(false);
+  });
+
+  it('trims the search and drops it when blank', async () => {
+    await apiClient.api.listings({ q: '  silk saree ' });
+    expect(lastUrl().searchParams.get('q')).toBe('silk saree');
+
+    await apiClient.api.listings({ q: '   ' });
+    expect(lastUrl().searchParams.has('q')).toBe(false);
+  });
+
+  it('URL-encodes a craft or search that contains reserved characters and Devanagari', async () => {
+    await apiClient.api.listings({ craft: 'Zari & gota', q: 'बनारसी साड़ी' });
+
+    const url = lastUrl();
+    expect(url.searchParams.get('craft')).toBe('Zari & gota');
+    expect(url.searchParams.get('q')).toBe('बनारसी साड़ी');
+    // The raw & must not have split the craft into a second parameter.
+    expect([...url.searchParams.keys()].sort()).toEqual(['craft', 'limit', 'offset', 'q']);
+  });
+
+  it('passes the offset through for the next page', async () => {
+    await apiClient.api.listings({ offset: 40 });
+    expect(lastUrl().searchParams.get('offset')).toBe('40');
+  });
+
+  it('does not let an id break out of the detail path', async () => {
+    fetchMock.mockResolvedValue(respond(200, { listing: {} }));
+    await apiClient.api.listing('abc/../../me');
+    expect(lastUrl().pathname).toBe('/v1/marketplace/listings/abc%2F..%2F..%2Fme');
+  });
+});

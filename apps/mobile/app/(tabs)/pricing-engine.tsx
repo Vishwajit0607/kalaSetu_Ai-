@@ -15,6 +15,7 @@ import { SplitHeading } from '@/components/ui/SplitHeading';
 import { LimeCircleButton } from '@/components/ui/LimeCircleButton';
 import { VoiceOrbRecorder } from '@/components/voice/VoiceOrbRecorder';
 import { colors, radii, spacing, typography } from '@/theme/tokens';
+import { extraPhotoUrls } from '@/services/extraPhotos';
 import { api, ApiError, type PricingBreakdown } from '@/services/apiClient';
 import { speak, stopSpeaking } from '@/services/speech';
 import { parseSpokenCosts } from '@/services/costParser';
@@ -207,6 +208,10 @@ export default function PricingEngineScreen() {
     if (committing) return;
 
     const d = useCatalogDraftStore.getState();
+    if (d.extraPhotos.some((photo) => photo.busy)) {
+      setError(t('price.extrasBusy'));
+      return;
+    }
     if (!d.isCommittable() || !d.catalog || !d.pricing || !d.rawImageUrl || !d.enhancedImageUrl) {
       return;
     }
@@ -218,6 +223,7 @@ export default function PricingEngineScreen() {
         // Hosted URLs the server handed out - never this phone's file paths.
         raw_image_url: d.rawImageUrl,
         enhanced_image_url: d.enhancedImageUrl,
+        gallery_image_urls: extraPhotoUrls(d.extraPhotos),
         voice_note_url: d.voiceNoteUrl,
         native_transcript: d.nativeTranscript,
         title_en: d.catalog.title_en,
@@ -245,13 +251,20 @@ export default function PricingEngineScreen() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['inventory'] }),
         queryClient.invalidateQueries({ queryKey: ['marketplace-status'] }),
+        // The new product is also a bazaar listing, and the crafts filter may
+        // have gained a category.
+        queryClient.invalidateQueries({ queryKey: ['bazaar'] }),
       ]);
 
+      const committed = t('price.committed', {
+        title: isEnglish ? d.catalog.title_en : d.catalog.title_hi,
+        price: d.pricing.recommended_wholesale_inr,
+      });
+      // The server saves the product even if it cannot store the extra photos
+      // (before the gallery migration is applied) - say so rather than let the
+      // artisan find out when a buyer asks for the other angles.
       void speak(
-        t('price.committed', {
-          title: isEnglish ? d.catalog.title_en : d.catalog.title_hi,
-          price: d.pricing.recommended_wholesale_inr,
-        }),
+        product.gallery_saved === false ? `${committed} ${t('price.galleryNotSaved')}` : committed,
         language,
       );
       useCatalogDraftStore.getState().reset();

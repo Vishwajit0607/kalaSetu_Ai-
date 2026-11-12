@@ -104,3 +104,21 @@ describe('buildQrTagHtml', () => {
     expect(html).toContain('₹12,400');
   });
 });
+
+describe('multi-photo products', () => {
+  it('lists every photo in the WhatsApp pitch, cover first, none twice', () => {
+    const pitch = buildWholesalePitch({
+      ...product,
+      gallery_image_urls: ['https://cdn.kalasetu.app/side.jpg', 'https://cdn.kalasetu.app/enhanced.png'],
+    });
+    const lines = pitch.split('\n');
+    const first = lines.indexOf('https://cdn.kalasetu.app/enhanced.png');
+    expect(first).toBeGreaterThan(-1);
+    expect(lines[first + 1]).toBe('https://cdn.kalasetu.app/side.jpg');
+    expect(lines.filter((l) => l.includes('enhanced.png'))).toHaveLength(1);
+  });
+
+  it('is unchanged for a product with no extras', () => {
+    expect(buildWholesalePitch(product)).toBe(buildWholesalePitch({ ...product, gallery_image_urls: [] }));
+  });
+});

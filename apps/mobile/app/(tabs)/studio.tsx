@@ -1,22 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
 import { ScreenShell } from '@/components/ui/ScreenShell';
 import { SplitHeading } from '@/components/ui/SplitHeading';
 import { LimeCircleButton } from '@/components/ui/LimeCircleButton';
 import { HaloProductStage, StageActionPill } from '@/components/ui/HaloProductStage';
 import { BackdropPresetBar } from '@/components/studio/BackdropPresetBar';
 import { BeforeAfterSlider } from '@/components/studio/BeforeAfterSlider';
+import { ExtraPhotosStrip } from '@/components/studio/ExtraPhotosStrip';
 import { colors, radii, typography } from '@/theme/tokens';
 import { api, ApiError } from '@/services/apiClient';
 import { speak } from '@/services/speech';
+import {
+  MAX_UPLOAD_EDGE,
+  addExtraPhotos,
+  discardAllExtraPhotos,
+  removeExtraPhoto,
+  restyleExtraPhotos,
+  type PickedPhoto,
+} from '@/services/extraPhotos';
 import { gradeColor, gradeExposure, type ExposureGrade } from '@/services/luminance';
 import { useArtisanStore } from '@/store/useArtisanStore';
-import { useCatalogDraftStore } from '@/store/useCatalogDraftStore';
+import { MAX_EXTRA_PHOTOS, useCatalogDraftStore } from '@/store/useCatalogDraftStore';
 import { useT } from '@/i18n';
 
 /**
@@ -38,14 +48,6 @@ import { useT } from '@/i18n';
 
 type StudioMode = 'viewfinder' | 'stage';
 
-/**
- * Longest edge sent to the server. Photoroom's output is capped at 1600px, so
- * anything larger is pure upload cost: a raw 12MP frame is 4-6 MB, which on a
- * rural uplink was the main reason the studio step timed out. At 1600px it is
- * a few hundred KB.
- */
-const MAX_UPLOAD_EDGE = 1600;
-
 export default function StudioScreen() {
   const router = useRouter();
   const offline = useArtisanStore((state) => state.offline);
@@ -60,6 +62,8 @@ export default function StudioScreen() {
   const backdrop = useCatalogDraftStore((state) => state.backdrop);
   const relight = useCatalogDraftStore((state) => state.relight);
   const shadow = useCatalogDraftStore((state) => state.shadow);
+  const extraPhotos = useCatalogDraftStore((state) => state.extraPhotos);
+  const extraBusy = extraPhotos.some((photo) => photo.busy);
 
   const cameraRef = useRef<CameraView | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -130,6 +134,15 @@ export default function StudioScreen() {
           degraded: result.degraded,
         });
         void speak(result.degraded ? t('studio.degraded') : t('studio.enhanced'), language);
+
+        // The other photos must match the cover, or the gallery looks like it
+        // was shot in three different places. Only when a look setting changed
+        // (not on a plain retry), and not if the cover itself fell back.
+        const restyle = Object.keys(overrides).length > 0 && !result.degraded;
+        if (restyle && useCatalogDraftStore.getState().extraPhotos.length > 0) {
+          const { failed } = await restyleExtraPhotos();
+          if (failed > 0) setError(t('studio.more.restyleFailed'));
+        }
       } catch (caught) {
         // The client's own errors already say the truthful thing - "no
         // internet" or "that is taking too long" - in the artisan's language.
@@ -193,7 +206,64 @@ export default function StudioScreen() {
     }
   }, [language, runEdit, t]);
 
+  /* ------------------------------------------------------- extra photos */
+
+  const ingest = useCallback(
+    async (picked: PickedPhoto[]) => {
+      if (picked.length === 0) return;
+      setError(null);
+      const outcome = await addExtraPhotos(picked, t('studio.more.failed'));
+
+      if (outcome.message) {
+        setError(outcome.message);
+        void speak(outcome.message, language);
+      } else if (outcome.added > 0) {
+        void speak(t('studio.more.added', { count: outcome.added }), language);
+      }
+      if (outcome.skipped > 0) {
+        setError(t('studio.more.full', { max: MAX_EXTRA_PHOTOS }));
+      }
+    },
+    [language, t],
+  );
+
+  const addFromCamera = useCallback(async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      setError(t('studio.more.permission'));
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
+    if (result.canceled) return;
+    await ingest(result.assets.map(({ uri, width, height }) => ({ uri, width, height })));
+  }, [ingest, t]);
+
+  const addFromGallery = useCallback(async () => {
+    const remaining = MAX_EXTRA_PHOTOS - useCatalogDraftStore.getState().extraPhotos.length;
+    if (remaining <= 0) {
+      setError(t('studio.more.full', { max: MAX_EXTRA_PHOTOS }));
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
+      quality: 0.8,
+    });
+    if (result.canceled) return;
+    await ingest(result.assets.map(({ uri, width, height }) => ({ uri, width, height })));
+  }, [ingest, t]);
+
+  const chooseExtraSource = useCallback(() => {
+    Alert.alert(t('studio.more.sourceTitle'), t('studio.more.sourceBody'), [
+      { text: t('studio.more.camera'), onPress: () => void addFromCamera() },
+      { text: t('studio.more.gallery'), onPress: () => void addFromGallery() },
+      { text: t('common.cancel'), style: 'cancel' },
+    ]);
+  }, [addFromCamera, addFromGallery, t]);
+
   const retake = useCallback(() => {
+    discardAllExtraPhotos();
     useCatalogDraftStore.getState().reset();
     setExposure(null);
     setError(null);
@@ -374,7 +444,7 @@ export default function StudioScreen() {
           actions={
             <>
               <StageActionPill
-                label="Remove background"
+                label={t('studio.pill.removeBg')}
                 active
                 onPress={() => {
                   // Background removal is always on, so tapping this again would
@@ -386,7 +456,7 @@ export default function StudioScreen() {
                 icon={<Ionicons name="cut-outline" size={18} color={colors.textInverseDark} />}
               />
               <StageActionPill
-                label="Studio relight"
+                label={t('studio.pill.relight')}
                 active={relight}
                 onPress={() => void runEdit({ relight: !relight })}
                 icon={
@@ -398,7 +468,7 @@ export default function StudioScreen() {
                 }
               />
               <StageActionPill
-                label="Shadow depth"
+                label={t('studio.pill.shadow')}
                 active={shadow}
                 showConnector={false}
                 onPress={() => void runEdit({ shadow: !shadow })}
@@ -450,10 +520,21 @@ export default function StudioScreen() {
       <View className="mt-7">
         <BackdropPresetBar
           selected={backdrop}
-          disabled={enhancing || offline}
+          disabled={enhancing || offline || extraBusy}
           onSelect={(key) => void runEdit({ backdrop: key })}
         />
       </View>
+
+      {rawImageUri && enhancedImageUrl && !studioDegraded ? (
+        <View className="mt-7">
+          <ExtraPhotosStrip
+            photos={extraPhotos}
+            disabled={enhancing || offline}
+            onAdd={chooseExtraSource}
+            onRemove={removeExtraPhoto}
+          />
+        </View>
+      ) : null}
 
       {error ? (
         <Text
@@ -504,7 +585,7 @@ export default function StudioScreen() {
           </Text>
         </View>
 
-        {enhancing ? (
+        {enhancing || extraBusy ? (
           <ActivityIndicator color={colors.electricLime} />
         ) : (
           <LimeCircleButton

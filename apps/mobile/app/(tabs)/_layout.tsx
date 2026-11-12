@@ -7,7 +7,7 @@ import { useLanguage } from '@/store/useArtisanStore';
 import { useT, type StringKey } from '@/i18n';
 
 /**
- * Six-tab bar.
+ * Seven-tab bar.
  *
  * Icons carry the meaning and labels back them up, because a tab bar is the
  * one place where an unreadable label is survivable - but every tab also
@@ -24,6 +24,7 @@ const TAB_SPEECH_KEYS: Record<string, StringKey> = {
   'pricing-engine': 'tab.speak.price',
   inventory: 'tab.speak.stock',
   marketplaces: 'tab.speak.market',
+  bazaar: 'tab.speak.bazaar',
 };
 
 export default function TabsLayout() {
@@ -121,6 +122,16 @@ export default function TabsLayout() {
           tabBarAccessibilityLabel: 'Marketplace sync hub',
           tabBarIcon: ({ color, focused }) => (
             <TabIcon name="globe" color={color} focused={focused} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="bazaar"
+        options={{
+          title: t('tab.bazaar'),
+          tabBarAccessibilityLabel: 'Artisan bazaar - products from every artisan',
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon name="storefront" color={color} focused={focused} />
           ),
         }}
       />

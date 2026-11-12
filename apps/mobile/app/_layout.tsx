@@ -147,6 +147,10 @@ export default function RootLayout() {
               name="product/[id]"
               options={{ presentation: 'card', animation: 'slide_from_right' }}
             />
+            <Stack.Screen
+              name="listing/[id]"
+              options={{ presentation: 'card', animation: 'slide_from_right' }}
+            />
           </Stack>
         </QueryClientProvider>
       </SafeAreaProvider>

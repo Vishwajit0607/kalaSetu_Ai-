@@ -253,7 +253,12 @@ export interface StudioEditResult {
   width: number;
   height: number;
   applied: string[];
+  /** True only when no studio engine could process the photo; the original is returned. */
   degraded: boolean;
+  /** Which engine produced the image: Photoroom, or the free built-in one. */
+  engine: 'photoroom' | 'local' | 'none';
+  /** Why the preferred engine was skipped, if it was. */
+  fallback_reason: 'quota' | 'unavailable' | null;
 }
 
 export interface ProductRow {
@@ -262,6 +267,10 @@ export interface ProductRow {
   sku: string;
   raw_image_url: string;
   enhanced_image_url: string;
+  /** Extra angles after the cover; absent on products saved before multi-photo. */
+  gallery_image_urls?: string[];
+  /** Only on a just-saved product that had extras: false if they could not be stored. */
+  gallery_saved?: boolean;
   voice_note_url?: string | null;
   title_en: string;
   title_hi: string;
@@ -278,9 +287,53 @@ export interface ProductRow {
   updated_at: string;
 }
 
+/**
+ * Another artisan's product, as the bazaar shows it. Mirrors the server's
+ * `PublicListing`: no cost price, labour hours, raw photo or phone number -
+ * those never leave the server for anyone but the owner.
+ */
+export interface PublicListing {
+  id: string;
+  sku: string;
+  enhanced_image_url: string;
+  /** Extra angles after the cover; absent from an older server. */
+  gallery_image_urls?: string[];
+  title_en: string;
+  title_hi: string;
+  description_en: string;
+  description_hi: string;
+  seo_tags: string[];
+  hsn_code: string | null;
+  dimensions_cm: DimensionsCm;
+  recommended_retail_inr: number;
+  recommended_wholesale_inr: number;
+  min_wholesale_qty: number;
+  stock_quantity: number;
+  updated_at: string;
+  /** True for the signed-in artisan's own products. */
+  is_mine: boolean;
+  seller: {
+    id: string;
+    full_name: string;
+    craft_category: string;
+    cluster_location: string | null;
+    gi_tag_certified: boolean;
+  };
+}
+
+export interface ListingsPage {
+  listings: PublicListing[];
+  total: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export const LISTINGS_PAGE_SIZE = 20;
+
 export interface CommitProductBody {
   raw_image_url: string;
   enhanced_image_url: string;
+  gallery_image_urls?: string[];
   voice_note_url: string | null;
   native_transcript: string | null;
   title_en: string;
@@ -362,6 +415,13 @@ export const api = {
       90_000,
     );
   },
+
+  /** Discard photos the artisan took for a draft and then dropped. Best effort. */
+  removeMedia: (urls: string[]) =>
+    request<{ removed: number; kept: number }>('/v1/vision/media/remove', {
+      method: 'POST',
+      body: JSON.stringify({ urls }),
+    }),
 
   /* Speech */
   transcribe: (params: { fileUri: string; languageCode?: string; store?: boolean }) => {
@@ -470,6 +530,23 @@ export const api = {
       spoken_text?: string;
       audio_base64: string | null;
     }>('/v1/inventory/low-stock-alert', json(body)),
+
+  /* Bazaar: every artisan's products, not just the signed-in one's. */
+  listings: (params: { q?: string; craft?: string | null; offset?: number; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    const q = params.q?.trim();
+    if (q) query.set('q', q);
+    if (params.craft) query.set('craft', params.craft);
+    query.set('limit', String(params.limit ?? LISTINGS_PAGE_SIZE));
+    query.set('offset', String(params.offset ?? 0));
+    return request<ListingsPage>(`/v1/marketplace/listings?${query.toString()}`);
+  },
+
+  listing: (id: string) =>
+    request<{ listing: PublicListing }>(`/v1/marketplace/listings/${encodeURIComponent(id)}`),
+
+  crafts: () =>
+    request<{ crafts: Array<{ name: string; count: number }> }>('/v1/marketplace/crafts'),
 
   /* Marketplaces */
   exportToMarketplaces: (body: { product_ids: string[]; channels: Array<'ondc' | 'gem' | 'b2b'> }) =>

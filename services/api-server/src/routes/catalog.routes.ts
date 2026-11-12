@@ -11,6 +11,7 @@ import {
 } from '../services/supabase.service.js';
 import { getArtisan } from '../services/auth.service.js';
 import { UpstreamError } from '../services/http.js';
+import { MAX_GALLERY, cleanGallery } from '../services/gallery.js';
 
 /** Gemini (+ BharatCode fallback) SEO + pricing orchestration, and product commit. */
 
@@ -48,6 +49,7 @@ const priceSchema = z.object({
 const productSchema = z.object({
   raw_image_url: z.string().url(),
   enhanced_image_url: z.string().url(),
+  gallery_image_urls: z.array(z.string().url()).max(MAX_GALLERY).default([]),
   voice_note_url: z.string().url().nullable().optional(),
   native_transcript: z.string().nullable().optional(),
   title_en: z.string().trim().min(1).max(200),
@@ -165,10 +167,13 @@ export const catalogRoutes: FastifyPluginAsync = async (fastify) => {
     const artisanId = request.artisanId as string;
     const body = productSchema.parse(request.body);
 
+    const gallery = cleanGallery(body.enhanced_image_url, body.gallery_image_urls);
+
     const media: Array<[string, string | null | undefined]> = [
       ['raw_image_url', body.raw_image_url],
       ['enhanced_image_url', body.enhanced_image_url],
       ['voice_note_url', body.voice_note_url],
+      ...gallery.map((url): [string, string] => ['gallery_image_urls', url]),
     ];
     for (const [field, url] of media) {
       if (url && !storagePathFromUrl(url, artisanId)) {
@@ -179,18 +184,35 @@ export const catalogRoutes: FastifyPluginAsync = async (fastify) => {
     const artisan = await getArtisan(artisanId);
     if (!artisan) return reply.notFound('account not found');
 
-    const { data, error } = await supabase()
-      .from('products')
-      .insert({
-        ...body,
-        artisan_id: artisanId,
-        sku: generateSku(artisan.craft_category),
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
+    // Left out entirely when empty, so a database that has not had the
+    // gallery migration yet keeps working for single-photo products.
+    const { gallery_image_urls: _ignored, ...row } = body;
+    const base = {
+      ...row,
+      artisan_id: artisanId,
+      sku: generateSku(artisan.craft_category),
+      updated_at: new Date().toISOString(),
+    };
+    const insert = (extra: Record<string, unknown>) =>
+      supabase()
+        .from('products')
+        .insert({ ...base, ...extra })
+        .select()
+        .single();
+
+    let { data, error } = await insert(gallery.length > 0 ? { gallery_image_urls: gallery } : {});
+    let gallerySaved = true;
+
+    if (error && gallery.length > 0 && /gallery_image_urls/.test(error.message)) {
+      // The extra-photos migration has not been applied. Losing the product the
+      // artisan just spent several minutes on would be worse than losing the
+      // extra angles, so save it without them and say so.
+      request.log.warn('gallery_image_urls column missing; saving product without extra photos');
+      ({ data, error } = await insert({}));
+      gallerySaved = false;
+    }
 
     if (error) return reply.internalServerError(`Product insert failed: ${error.message}`);
-    return reply.code(201).send(data);
+    return reply.code(201).send({ ...data, ...(gallery.length > 0 ? { gallery_saved: gallerySaved } : {}) });
   });
 };

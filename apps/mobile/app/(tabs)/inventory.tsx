@@ -75,7 +75,11 @@ export default function InventoryScreen() {
         void speak(result.spoken_confirmation, language);
 
         if (result.matched) {
-          await queryClient.invalidateQueries({ queryKey: ['inventory', profile.serverId] });
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['inventory', profile.serverId] }),
+            // Stock shows in the bazaar as "Sold out".
+            queryClient.invalidateQueries({ queryKey: ['bazaar'] }),
+          ]);
         }
       } catch (caught) {
         const message =
@@ -282,9 +286,10 @@ export default function InventoryScreen() {
                 onAdjust={async (delta) => {
                   if (!profile?.serverId) return;
                   await api.adjustStock(product.id, { delta });
-                  await queryClient.invalidateQueries({
-                    queryKey: ['inventory', profile.serverId],
-                  });
+                  await Promise.all([
+                    queryClient.invalidateQueries({ queryKey: ['inventory', profile.serverId] }),
+                    queryClient.invalidateQueries({ queryKey: ['bazaar'] }),
+                  ]);
                 }}
               />
             ))}

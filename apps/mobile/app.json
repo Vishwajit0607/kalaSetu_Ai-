@@ -52,6 +52,13 @@
         }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow KalaSetu to use photos of your crafts.",
+          "cameraPermission": "Allow KalaSetu to photograph your crafts."
+        }
+      ],
+      [
         "expo-av",
         {
           "microphonePermission": "Allow KalaSetu to hear your product descriptions."

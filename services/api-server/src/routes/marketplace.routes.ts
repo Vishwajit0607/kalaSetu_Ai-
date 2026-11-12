@@ -3,12 +3,13 @@ import { z } from 'zod';
 import { supabase } from '../services/supabase.service.js';
 import { synthesizeSpeech, translateText } from '../services/sarvam.service.js';
 import {
-  LISTING_SELECT,
-  sanitizeSearch,
+  queryListings,
   searchFilter,
+  searchWords,
   toPublicListing,
   type ListingRow,
 } from '../services/listings.service.js';
+import { productImages } from '../services/gallery.js';
 import type { Product, SupportedLanguage } from '../types/index.js';
 
 /** ONDC / GeM / WhatsApp-B2B export adapters and the buyer inquiry feed. */
@@ -26,7 +27,7 @@ export function toOndcItem(product: Product, artisanName: string): Record<string
       code: product.hsn_code ?? '',
       short_desc: product.description_en.slice(0, 200),
       long_desc: product.description_en,
-      images: [product.enhanced_image_url],
+      images: productImages(product),
     },
     price: {
       currency: 'INR',
@@ -92,7 +93,7 @@ export function toGemCatalogRow(
       weight_grams: product.dimensions_cm.weight_grams ?? null,
       material_description: product.description_en.slice(0, 500),
     },
-    images: [product.enhanced_image_url],
+    images: productImages(product),
     msme_artisan_declaration: {
       artisan_name: artisan.full_name,
       gi_tag_certified: artisan.gi_tag_certified,
@@ -143,21 +144,23 @@ export const marketplaceRoutes: FastifyPluginAsync = async (fastify) => {
       })
       .parse(request.query);
 
-    let builder = supabase()
-      .from('products')
-      .select(LISTING_SELECT, { count: 'exact' })
-      .is('deleted_at', null);
+    const { data, error, count } = await queryListings((select) => {
+      let builder = supabase()
+        .from('products')
+        .select(select, { count: 'exact' })
+        .is('deleted_at', null);
 
-    const term = sanitizeSearch(query.q);
-    if (term) builder = builder.or(searchFilter(term));
-    if (query.craft) builder = builder.eq('artisans.craft_category', query.craft);
+      // One or() group per word; repeated groups are ANDed by PostgREST.
+      for (const word of searchWords(query.q)) builder = builder.or(searchFilter(word));
+      if (query.craft) builder = builder.eq('artisans.craft_category', query.craft);
 
-    const { data, error, count } = await builder
-      .order('updated_at', { ascending: false })
-      // Tie-break so a page boundary never repeats or skips rows that share a
-      // timestamp (a bulk export touches many rows in the same millisecond).
-      .order('id', { ascending: true })
-      .range(query.offset, query.offset + query.limit - 1);
+      return builder
+        .order('updated_at', { ascending: false })
+        // Tie-break so a page boundary never repeats or skips rows that share a
+        // timestamp (a bulk export touches many rows in the same millisecond).
+        .order('id', { ascending: true })
+        .range(query.offset, query.offset + query.limit - 1);
+    });
 
     if (error) return reply.internalServerError(error.message);
 
@@ -178,12 +181,14 @@ export const marketplaceRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { id: string } }>('/listings/:id', async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
 
-    const { data, error } = await supabase()
-      .from('products')
-      .select(LISTING_SELECT)
-      .eq('id', id)
-      .is('deleted_at', null)
-      .maybeSingle();
+    const { data, error } = await queryListings((select) =>
+      supabase()
+        .from('products')
+        .select(select)
+        .eq('id', id)
+        .is('deleted_at', null)
+        .maybeSingle(),
+    );
 
     if (error) return reply.internalServerError(error.message);
 

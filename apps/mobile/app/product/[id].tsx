@@ -8,9 +8,12 @@ import { SplitHeading } from '@/components/ui/SplitHeading';
 import { HaloProductStage, StageActionPill } from '@/components/ui/HaloProductStage';
 import { SplitBadgePill } from '@/components/ui/SplitBadgePill';
 import { LimeCircleButton } from '@/components/ui/LimeCircleButton';
+import { PriceTile, SpecRow } from '@/components/ui/ProductFacts';
+import { GalleryThumbs } from '@/components/ui/GalleryThumbs';
 import { colors, radii, spacing, typography } from '@/theme/tokens';
 import { api, type ProductRow } from '@/services/apiClient';
 import { buildWholesalePitch } from '@/services/catalogExports';
+import { productImages } from '@/services/gallery';
 import { speak } from '@/services/speech';
 import { useArtisanStore } from '@/store/useArtisanStore';
 import { useT } from '@/i18n';
@@ -32,6 +35,7 @@ export default function ProductDetailScreen() {
   // Lead with whichever language the artisan reads; both are generated.
   const [tabOverride, setTab] = useState<'hi' | 'en' | null>(null);
   const tab: 'hi' | 'en' = tabOverride ?? (isEnglish ? 'en' : 'hi');
+  const [pickedImage, setPickedImage] = useState<string | null>(null);
 
   const inventoryQuery = useQuery({
     queryKey: ['inventory', profile?.serverId],
@@ -94,6 +98,8 @@ export default function ProductDetailScreen() {
     );
   }
 
+  const images = productImages(product);
+  const shownImage = pickedImage && images.includes(pickedImage) ? pickedImage : images[0]!;
   const title = tab === 'hi' ? product.title_hi : product.title_en;
   const description = tab === 'hi' ? product.description_hi : product.description_en;
 
@@ -118,7 +124,7 @@ export default function ProductDetailScreen() {
 
       <View className="mt-4">
         <HaloProductStage
-          imageUri={product.enhanced_image_url}
+          imageUri={shownImage}
           caption={t('product.inStock', { count: product.stock_quantity })}
           actions={
             <>
@@ -142,6 +148,12 @@ export default function ProductDetailScreen() {
           }
         />
       </View>
+
+      {images.length > 1 ? (
+        <View className="mt-4">
+          <GalleryThumbs images={images} selected={shownImage} onSelect={setPickedImage} />
+        </View>
+      ) : null}
 
       <View style={{ marginTop: 24 }}>
         <SplitHeading
@@ -286,81 +298,5 @@ export default function ProductDetailScreen() {
         />
       </View>
     </ScreenShell>
-  );
-}
-
-function PriceTile({
-  label,
-  value,
-  caption,
-}: {
-  label: string;
-  value: string;
-  caption: string;
-}) {
-  return (
-    <View
-      className="flex-1 p-5"
-      style={{
-        borderRadius: radii.bento,
-        backgroundColor: colors.surfaceCharcoal,
-        borderWidth: 1,
-        borderColor: colors.borderHairline,
-      }}
-    >
-      <Text
-        className="font-heading"
-        style={{ color: colors.electricLime, fontSize: typography.label - 1, letterSpacing: 1 }}
-      >
-        {label}
-      </Text>
-      <Text
-        className="mt-2 font-display"
-        style={{ color: colors.textPureWhite, fontSize: typography.title - 2 }}
-      >
-        {value}
-      </Text>
-      <Text
-        className="mt-1 font-body"
-        style={{ color: colors.textMutedSage, fontSize: typography.label - 1 }}
-      >
-        {caption}
-      </Text>
-    </View>
-  );
-}
-
-function SpecRow({
-  label,
-  value,
-  last = false,
-}: {
-  label: string;
-  value: string;
-  last?: boolean;
-}) {
-  return (
-    <View
-      className="flex-row items-center justify-between py-2.5"
-      style={
-        last
-          ? undefined
-          : { borderBottomWidth: 1, borderBottomColor: colors.borderHairline }
-      }
-    >
-      <Text
-        className="font-body"
-        style={{ color: colors.textMutedSage, fontSize: typography.label + 1 }}
-      >
-        {label}
-      </Text>
-      <Text
-        className="ml-4 flex-1 text-right font-heading"
-        style={{ color: colors.textPureWhite, fontSize: typography.label + 1 }}
-        numberOfLines={2}
-      >
-        {value}
-      </Text>
-    </View>
   );
 }

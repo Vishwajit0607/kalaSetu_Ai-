@@ -147,3 +147,11 @@ CREATE POLICY movements_owner_access ON stock_movements
 CREATE INDEX IF NOT EXISTS products_market_idx
   ON products (updated_at DESC, id)
   WHERE deleted_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Multiple photos per product.
+-- `enhanced_image_url` stays the cover; extra angles live here, in display
+-- order. Idempotent - safe to run on a database that already has it.
+-- ---------------------------------------------------------------------------
+ALTER TABLE products
+  ADD COLUMN IF NOT EXISTS gallery_image_urls TEXT[] NOT NULL DEFAULT '{}';

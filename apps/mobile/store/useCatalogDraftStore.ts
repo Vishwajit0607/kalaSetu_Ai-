@@ -34,6 +34,21 @@ export type PipelineStage =
   | 'ready'
   | 'failed';
 
+/** Extra angles after the cover photo. */
+export const MAX_EXTRA_PHOTOS = 5;
+
+export interface ExtraPhoto {
+  id: string;
+  /** Local file, shown instantly while the studio edit runs. */
+  previewUri: string;
+  /** Hosted capture, kept so the photo can be re-styled without re-uploading. */
+  rawUrl: string | null;
+  /** Hosted studio render; null until the first edit finishes. */
+  enhancedUrl: string | null;
+  /** True while this photo is being uploaded or re-styled. */
+  busy: boolean;
+}
+
 export interface CatalogDraft {
   stage: PipelineStage;
 
@@ -48,6 +63,8 @@ export interface CatalogDraft {
   relight: boolean;
   shadow: boolean;
   studioDegraded: boolean;
+  /** Additional photos of the same product; the cover is `enhancedImageUrl`. */
+  extraPhotos: ExtraPhoto[];
 
   /* Voice */
   voiceNoteUrl: string | null;
@@ -73,6 +90,9 @@ interface CatalogDraftState extends CatalogDraft {
   /** A fresh capture: every hosted result belongs to the old photo, so drop it. */
   setCapture: (uri: string) => void;
   setUploaded: (params: { rawUrl: string; enhancedUrl: string; degraded: boolean }) => void;
+  addExtraPhotos: (photos: ExtraPhoto[]) => void;
+  patchExtraPhoto: (id: string, patch: Partial<Omit<ExtraPhoto, 'id'>>) => void;
+  dropExtraPhoto: (id: string) => void;
   setStudioOptions: (options: { backdrop?: string; relight?: boolean; shadow?: boolean }) => void;
   setVoiceNote: (params: { url: string | null; durationMs: number }) => void;
   setTranscript: (transcript: string) => void;
@@ -103,6 +123,7 @@ const INITIAL: CatalogDraft = {
   relight: true,
   shadow: true,
   studioDegraded: false,
+  extraPhotos: [],
   voiceNoteUrl: null,
   voiceDurationMs: 0,
   nativeTranscript: null,
@@ -140,6 +161,19 @@ export const useCatalogDraftStore = create<CatalogDraftState>((set, get) => ({
       stage: 'enhanced',
       error: null,
     }),
+
+  addExtraPhotos: (photos) =>
+    set((state) => ({
+      extraPhotos: [...state.extraPhotos, ...photos].slice(0, MAX_EXTRA_PHOTOS),
+    })),
+
+  patchExtraPhoto: (id, patch) =>
+    set((state) => ({
+      extraPhotos: state.extraPhotos.map((photo) => (photo.id === id ? { ...photo, ...patch } : photo)),
+    })),
+
+  dropExtraPhoto: (id) =>
+    set((state) => ({ extraPhotos: state.extraPhotos.filter((photo) => photo.id !== id) })),
 
   setStudioOptions: (options) => set((state) => ({ ...state, ...options })),
 
@@ -189,7 +223,9 @@ export const useCatalogDraftStore = create<CatalogDraftState>((set, get) => ({
         // The server rejects a zero length or width, so require them here
         // instead of letting the artisan reach the last button and fail.
         state.dimensionsCm.length > 0 &&
-        state.dimensionsCm.width > 0,
+        state.dimensionsCm.width > 0 &&
+        // An extra still uploading has no hosted URL yet; saving now would drop it.
+        !state.extraPhotos.some((photo) => photo.busy),
     );
   },
 }));
