@@ -1,0 +1,70 @@
+{
+  "expo": {
+    "name": "KalaSetu AI",
+    "slug": "kalasetu-ai",
+    "version": "1.0.0",
+    "icon": "./assets/icon.png",
+    "orientation": "portrait",
+    "scheme": "kalasetu",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "backgroundColor": "#060705",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#060705"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.kalasetu.ai",
+      "infoPlist": {
+        "NSCameraUsageDescription": "KalaSetu uses the camera to photograph your crafts for your online catalog.",
+        "NSMicrophoneUsageDescription": "KalaSetu listens to your voice so you can describe products and update stock without typing.",
+        "UIBackgroundModes": [
+          "fetch",
+          "processing"
+        ]
+      }
+    },
+    "android": {
+      "package": "app.kalasetu.ai",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#060705"
+      },
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow KalaSetu to photograph your crafts."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow KalaSetu to hear your product descriptions."
+        }
+      ],
+      "expo-sqlite",
+      "expo-asset",
+      "expo-font",
+      "expo-secure-store"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "tsconfigPaths": true
+    }
+  }
+}
