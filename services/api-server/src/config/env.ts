@@ -31,6 +31,13 @@ const envSchema = z.object({
   BHARATCODE_BASE_URL: z.string().url().default('https://bharatcode.ai/api/model/v1'),
   BHARATCODE_MODEL: z.string().default('qwen-3.8-27b'),
 
+  /**
+   * Which engine makes the studio photos. `auto` uses Photoroom and falls back
+   * to the free in-process engine when Photoroom is out of credits or down;
+   * `local` never calls Photoroom; `photoroom` never falls back.
+   */
+  STUDIO_ENGINE: z.enum(['auto', 'photoroom', 'local']).default('auto'),
+
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(16),
   SUPABASE_STORAGE_BUCKET: z.string().default('kalasetu-media'),
