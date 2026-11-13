@@ -21,14 +21,15 @@ are supported - exactly two, each with a real, parity-checked dictionary.
 8. [Mobile app architecture](#mobile-app-architecture)
 9. [Accounts](#accounts)
 10. [New-product pipeline](#new-product-pipeline)
-11. [The Bazaar](#the-bazaar)
-12. [Offline - what is real](#offline---what-is-real)
-13. [Cross-cutting design decisions](#cross-cutting-design-decisions)
-14. [Security and privacy model](#security-and-privacy-model)
-15. [Design system](#design-system)
-16. [Deviations from the brief](#deviations-from-the-brief)
-17. [Known gaps](#known-gaps)
-18. [Build phase status](#build-phase-status)
+11. [Product lifecycle](#product-lifecycle)
+12. [The Bazaar](#the-bazaar)
+13. [Offline - what is real](#offline---what-is-real)
+14. [Cross-cutting design decisions](#cross-cutting-design-decisions)
+15. [Security and privacy model](#security-and-privacy-model)
+16. [Design system](#design-system)
+17. [Deviations from the brief](#deviations-from-the-brief)
+18. [Known gaps](#known-gaps)
+19. [Build phase status](#build-phase-status)
 
 ## What it does
 
@@ -42,7 +43,8 @@ are supported - exactly two, each with a real, parity-checked dictionary.
 | 6 | Stock | `app/(tabs)/inventory.tsx` | Stock grid, **voice stock adjustment** ("sold three blue cotton sarees"), QR tag per SKU, bilingual wholesale lookbook PDF |
 | 7 | Market (sync hub) | `app/(tabs)/marketplaces.tsx` | Outbound: ONDC / GeM / WhatsApp-B2B payloads in one tap. Inbound: buyer inquiries, translated and read aloud |
 | 8 | **Bazaar** | `app/(tabs)/bazaar.tsx`, `app/listing/[id].tsx` | **Every artisan's products** - search, filter by craft, open a listing. See [The Bazaar](#the-bazaar) |
-| - | Product detail (own) | `app/product/[id].tsx` | The owner's view of one product: share pitch, QR tag, sync status |
+| - | Product detail (own) | `app/product/[id].tsx` | The owner's view of one product: share pitch, QR tag, sync status, price history, make-cover, delete with undo |
+| - | Edit product | `app/product/edit/[id].tsx` | Change title, description, prices, minimum quantity, tags, HSN and size. See [Product lifecycle](#product-lifecycle) |
 
 > **Market vs Bazaar.** *Market* (tab 7) sends **your** products **out** to
 > external channels. *Bazaar* (tab 8) is where you see **other artisans'** products
@@ -263,6 +265,7 @@ erDiagram
   ARTISANS ||--o{ AUTH_EVENTS : "security trail"
   PRODUCTS ||--o{ BUYER_INQUIRIES : "about (SET NULL)"
   PRODUCTS ||--o{ STOCK_MOVEMENTS : ledger
+  PRODUCTS ||--o{ PRODUCT_PRICE_HISTORY : "prices over time (CASCADE)"
 ```
 
 Defined in [`services/api-server/src/db/migrations.sql`](services/api-server/src/db/migrations.sql).
@@ -274,6 +277,7 @@ Defined in [`services/api-server/src/db/migrations.sql`](services/api-server/src
 | `buyer_inquiries` | Inbound B2B messages with the source language, requested quantity, offered price, status |
 | `stock_movements` | Audit ledger of every voice/manual/order/sync adjustment |
 | `auth_events` | Security trail: signup, login, failed login, logout, password change. Created by migration `010`; see [Account security](#account-security) |
+| `product_price_history` | One row each time a product is created or either price changes: retail, wholesale, `source` (`create` / `edit` / `system`), `changed_at`. Written by a database trigger only. Migrations `020` and `021`; see [Product lifecycle](#product-lifecycle) |
 
 - **Cascades.** Deleting an artisan removes their products, inquiries and stock
   movements; account deletion also removes their storage objects, then the auth
@@ -312,6 +316,10 @@ All routes are under the server's base URL. Errors share one envelope (below).
 | Auth | `POST /v1/catalog/generate` | Gemini listing from a stored image URL + transcript |
 | Auth | `POST /v1/catalog/price` | Deterministic pricing breakdown + spoken rationale |
 | Auth | `POST /v1/catalog/products` | Commit an approved draft (URLs must be the caller's own uploads) |
+| Auth | `GET` · `PATCH` · `DELETE /v1/catalog/products/:id` | One of your products; change chosen fields; delete it reversibly. Not yours, or already deleted: `404` |
+| Auth | `POST /v1/catalog/products/:id/restore` | Undo a delete |
+| Auth | `GET /v1/catalog/products/:id/price-history` | Past prices, newest first, each with its change from the one before; `limit` (1-50, default 20), `before` cursor |
+| Auth | `POST /v1/catalog/products/:id/retranslate` | Translate the title and description from one language into the other; preview unless `apply` (10/min) |
 | Auth | `GET /v1/inventory` | The caller's stock grid, low-stock list, total value |
 | Auth | `PATCH /v1/inventory/:productId/stock` | Absolute set or relative delta |
 | Auth | `POST /v1/inventory/voice-adjust` | "Sold 3 blue cotton sarees" -> fuzzy match -> decrement |
@@ -550,6 +558,106 @@ caches, so it appears everywhere at once.
 - Out-of-order price responses could overwrite newer ones; a stale price could
   be committed before its recalculation landed; the Studio tab stayed on an
   empty stage after a save; stock quantity was hard-coded to 1.
+
+## Product lifecycle
+
+After a product is saved it can be looked at, corrected, re-priced and deleted - and
+every one of those is the artisan's own and nobody else's.
+
+```
+GET    /v1/catalog/products/:id                 one product
+PATCH  /v1/catalog/products/:id                 change chosen fields
+DELETE /v1/catalog/products/:id                 hide it (reversible)
+POST   /v1/catalog/products/:id/restore         bring it back
+GET    /v1/catalog/products/:id/price-history   past prices
+POST   /v1/catalog/products/:id/retranslate     Hindi <-> English
+```
+
+### Ownership
+
+Identity comes only from the verified token. The service-role key bypasses RLS, so
+every query in `product.service.ts` filters by the artisan it was called for, and a
+product that belongs to someone else is a plain `404` - the same answer as one that
+does not exist, so ids cannot be probed. Request bodies are `.strict()`: an
+`artisan_id` (or anything else not listed below) is refused with a `400`, not ignored.
+
+### Editing (`PATCH`)
+
+Editable: `title_en/hi`, `description_en/hi`, `seo_tags`, `hsn_code`, `material_cost_inr`,
+`labor_hours`, `recommended_retail_inr`, `recommended_wholesale_inr`, `min_wholesale_qty`,
+`dimensions_cm` (any measurement on its own), and the photos (below). Send at least one
+field; only the columns that actually changed are written.
+
+- **Stock is deliberately not editable here.** It changes through the inventory screens,
+  so every change leaves a row in `stock_movements`. A `stock_quantity` in the body is a `400`.
+- **Retail must stay above wholesale**, checked against the values the product will have
+  *after* the edit - so changing only the wholesale price cannot push it over the retail one.
+- **Tags** are lower-cased and de-duplicated (at most 30, each up to 40 characters).
+- **Photos can only be rearranged or removed, never added or swapped for a URL the
+  product does not already have.** `cover_image_url` promotes one of the extra photos (the
+  old cover takes its place in the gallery); `gallery_image_urls` sets the order and drops
+  any left out, up to 5. A photo that is no longer part of the product is deleted from
+  storage afterwards, best-effort, and only paths under the caller's own folder.
+
+### Deleting and restoring
+
+`DELETE` sets `deleted_at`; nothing is erased, so `POST .../restore` brings the product back
+exactly as it was. Deleting an already-deleted product, or restoring one that is not
+deleted, is a `404`. The Bazaar already leaves deleted products out.
+
+### Price history
+
+A **database trigger** (`products_log_price`) writes a row when a product is created and
+whenever either price actually changes - not in the API, so a price changed any other way
+(the SQL editor, a future feature) is recorded too. A stock sale or a new title writes
+nothing. Products that existed before the trigger get one `system` row for the price they
+have now, so their history does not start empty (earlier prices are not recoverable).
+
+The table is readable only by the product's owner (RLS through `products.artisan_id`) and
+its write privileges are revoked from the public roles. The endpoint returns each row with
+`retail_change` / `wholesale_change` against the row before it, paged by a time cursor
+(`next_before`).
+
+### Re-translation
+
+`POST .../retranslate` with `{ "from": "en-IN" | "hi-IN", "apply": false }` translates the
+title and description with the same Sarvam model the listing is first written with.
+
+- It **previews by default**; nothing is overwritten until `apply: true`.
+- It writes **only the other language's fields** and never the one translated from.
+- Text is cut into pieces of at most 900 characters (at sentence ends, including the Hindi
+  danda, then at words) and sent **one at a time**. If any piece fails the whole request
+  fails with a `502` and **nothing is saved** - there is never a half-translated product.
+- A field with no source text is skipped rather than overwritten with nothing.
+
+### On the phone
+
+- `app/product/edit/[id].tsx` with `components/ui/ProductForm.tsx`. All checking is in
+  `services/productForm.ts` (pure, tested): it accepts Hindi digits, a rupee sign and
+  `1,20,000`-style commas, reports every problem at once in the artisan's language, and
+  sends only what changed. Leaving with unsaved changes asks first.
+- The product screen gains **delete with undo**, a **price-history card**, and **make this
+  the cover photo** on any photo that is not the cover.
+- The client methods `getProduct`, `updateProduct`, `deleteProduct`, `restoreProduct`,
+  `priceHistory` and `retranslateProduct` are in `services/apiClient.ts`.
+
+### Applying the migrations
+
+Run `020_price_history.sql` then `021_price_history_trigger.sql` (Supabase SQL editor, or
+`npm run db:migrate`). The API works before they are applied - the price-history endpoint
+answers with an empty list instead of failing - but nothing is recorded until they are.
+`migrations/verify/020_021_smoke.sql` is a rollback-safe check that the trigger, the
+backfill, the RLS policy and the revoked privileges behave as described.
+
+### Tests
+
+161 new backend tests (`product.service`, `products-routes`, `retranslate`,
+`retranslate-failures`, `product-invariants`, `products-isolation`) and 95 new mobile tests
+(`productClient`, `productForm`, `productLifecycle`). They include seeded random invariants
+(no photo is ever lost, invented or duplicated; price changes add up to newest minus oldest;
+no translation chunk exceeds its limit), a sweep that calls every endpoint as two different
+artisans while naming a third, and the failure cases for the translator. Each group was
+checked by breaking the code on purpose and confirming a test failed.
 
 ## The Bazaar
 
@@ -829,6 +937,19 @@ Signature components, all in `apps/mobile/components/ui/`:
   With an online-only pipeline that is not true when a vendor is down - the same
   class of bug as the "saved on the phone" message fixed earlier. It is in
   `services/api-server/src/i18n.ts`.
+- **The inventory list still shows deleted products.** `GET /v1/inventory` does not yet
+  filter `deleted_at`. The product screen therefore removes a deleted product from the list
+  it already holds instead of refetching; until the inventory endpoint is changed, another
+  refetch (pull to refresh, reopening the tab) shows the product again. The Bazaar is not
+  affected.
+- **Undo exists only on the delete screen.** Once the artisan leaves it, the app has no way
+  to restore the product (the API can; there is no "recently deleted" list), and nothing
+  purges old soft-deleted products or their photos.
+- **Re-translation has an API and a client method but no screen** yet.
+- **Price history starts at deployment.** Earlier prices were never recorded, so a product's
+  first row is its price on the day the migration ran.
+- **The error handler repeats the vendor's own message** in the `message` field of a `502`
+  (`plugins/error-handler.ts`), which can include text from the vendor's error body.
 - **The Bazaar** has no seller contact / inquiry, orders by last update rather
   than first listing, and has no automated test against a real PostgREST.
 - **iOS 27 needs hand edits** to the generated `ios/` project (see Getting started).
@@ -851,6 +972,7 @@ Signature components, all in `apps/mobile/components/ui/`:
 | 7 · Accessibility & verification | Audio readouts, 56px targets, security + pipeline regression tests |
 | 8 · Accounts | Complete — phone + password, JWT, scoped routes, in-app deletion |
 | 9 · Bazaar | Server + client built, 26 server and 5 client tests; queries verified against the dev database. **Not yet checked on a device** - sign in and open the Bazaar tab |
+| 10 · Product lifecycle | Edit, delete with undo, price history (database trigger), re-translation. 161 backend and 95 mobile tests; SQL smoke-tested on PostgreSQL 16 and bundled for Android. **Screens not yet tried on a phone** |
 
 Two items in Phase 7 need real hardware and are not claimed as verified: the
 60fps measurement on a low-end Android, and end-to-end runs against live

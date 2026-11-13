@@ -284,7 +284,63 @@ export interface ProductRow {
   min_wholesale_qty: number;
   marketplace_sync_status: { ondc: boolean; gem: boolean; b2b: boolean };
   dimensions_cm: DimensionsCm;
+  /** Set when the product has been deleted (it can still be restored); absent or null otherwise. */
+  deleted_at?: string | null;
   updated_at: string;
+}
+
+/**
+ * What `PATCH /v1/catalog/products/:id` accepts. Every field is optional but at least one
+ * is required, and the server refuses anything not listed here - including `stock_quantity`
+ * (stock changes through the inventory screens so each change is recorded) and `artisan_id`.
+ */
+export interface ProductPatch {
+  title_en?: string;
+  title_hi?: string;
+  description_en?: string;
+  description_hi?: string;
+  seo_tags?: string[];
+  hsn_code?: string | null;
+  material_cost_inr?: number;
+  labor_hours?: number;
+  recommended_retail_inr?: number;
+  recommended_wholesale_inr?: number;
+  min_wholesale_qty?: number;
+  dimensions_cm?: Partial<DimensionsCm>;
+  /** Make one of the product's existing photos the cover. */
+  cover_image_url?: string;
+  /** The extra photos, in order; may only drop photos or reorder the ones the product has. */
+  gallery_image_urls?: string[];
+}
+
+/** One price the product has had, with how far it moved from the one before. */
+export interface PriceHistoryEntry {
+  id: string;
+  retail_inr: number;
+  wholesale_inr: number;
+  source: 'create' | 'edit' | 'system';
+  changed_at: string;
+  /** Null for the first price there is to compare with. */
+  retail_change: number | null;
+  wholesale_change: number | null;
+}
+
+export interface PriceHistoryPage {
+  history: PriceHistoryEntry[];
+  /** Pass as `before` for the next (older) page; null when there is none. */
+  next_before: string | null;
+}
+
+export type ListingLanguage = 'en-IN' | 'hi-IN';
+
+export interface RetranslateResult {
+  from: ListingLanguage;
+  to: ListingLanguage;
+  /** What the other language would become; a field is absent when there was no text to translate. */
+  translations: { title?: string; description?: string };
+  applied: boolean;
+  /** The product after saving; null for a preview. */
+  product: ProductRow | null;
 }
 
 /**
@@ -544,6 +600,48 @@ export const api = {
   }) => request<{ breakdown: PricingBreakdown; rationale: string }>('/v1/catalog/price', json(body)),
 
   commitProduct: (body: CommitProductBody) => request<ProductRow>('/v1/catalog/products', json(body)),
+
+  /* Product lifecycle: always the signed-in artisan's own; a product that is not theirs is a 404. */
+  getProduct: (productId: string) =>
+    request<{ product: ProductRow }>(`/v1/catalog/products/${encodeURIComponent(productId)}`),
+
+  /** Change only the fields given. Stock is not editable here. */
+  updateProduct: (productId: string, patch: ProductPatch) =>
+    request<{ product: ProductRow }>(`/v1/catalog/products/${encodeURIComponent(productId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  /** Hides the product but keeps it, so `restoreProduct` can bring it back. */
+  deleteProduct: (productId: string) =>
+    request<{ deleted: true; id: string; deleted_at: string; restorable: true }>(
+      `/v1/catalog/products/${encodeURIComponent(productId)}`,
+      { method: 'DELETE' },
+    ),
+
+  restoreProduct: (productId: string) =>
+    request<{ product: ProductRow }>(`/v1/catalog/products/${encodeURIComponent(productId)}/restore`, {
+      method: 'POST',
+    }),
+
+  /** Past prices, newest first. */
+  priceHistory: (productId: string, params: { limit?: number; before?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.before) query.set('before', params.before);
+    const qs = query.toString();
+    return request<PriceHistoryPage>(
+      `/v1/catalog/products/${encodeURIComponent(productId)}/price-history${qs ? `?${qs}` : ''}`,
+    );
+  },
+
+  /** Translate the title and description from one language into the other. A preview unless `apply`. */
+  retranslateProduct: (productId: string, body: { from: ListingLanguage; apply?: boolean }) =>
+    request<RetranslateResult>(
+      `/v1/catalog/products/${encodeURIComponent(productId)}/retranslate`,
+      json(body),
+      60_000, // each translation is a separate paid call to the vendor, one after another
+    ),
 
   /* Inventory: always the signed-in artisan's own - no id in any URL. */
   inventory: () =>

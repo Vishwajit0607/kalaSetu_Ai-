@@ -12,6 +12,7 @@ import { accountRoutes } from './routes/account.routes.js';
 import { visionRoutes } from './routes/vision.routes.js';
 import { speechRoutes } from './routes/speech.routes.js';
 import { catalogRoutes } from './routes/catalog.routes.js';
+import { productsRoutes } from './routes/products.routes.js';
 import { inventoryRoutes } from './routes/inventory.routes.js';
 import { marketplaceRoutes } from './routes/marketplace.routes.js';
 
@@ -77,6 +78,7 @@ export async function buildServer() {
     await scope.register(accountRoutes, { prefix: '/v1/me' });
     await scope.register(visionRoutes, { prefix: '/v1/vision' });
     await scope.register(catalogRoutes, { prefix: '/v1/catalog' });
+    await scope.register(productsRoutes, { prefix: '/v1/catalog/products' });
     await scope.register(inventoryRoutes, { prefix: '/v1/inventory' });
     await scope.register(marketplaceRoutes, { prefix: '/v1/marketplace' });
   });
