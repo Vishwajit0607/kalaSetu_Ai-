@@ -23,6 +23,9 @@ const SPOKEN = {
     'auth.weakPassword': 'Your password must be at least 6 characters.',
     'auth.sessionExpired': 'Your session has ended. Please log in again.',
     'auth.accountDeleted': 'Your account has been deleted.',
+    'auth.wrongPassword': 'Your current password is not correct. Please try again.',
+    'auth.samePassword': 'Please choose a new password that is different from the old one.',
+    'auth.passwordChanged': 'Your password has been changed.',
 
     'stock.whichItem': 'Which item was sold? Please say it again.',
     'stock.reduced': 'Reduced {qty} {title}. {left} left now.',
@@ -55,6 +58,9 @@ const SPOKEN = {
     'auth.weakPassword': 'पासवर्ड कम से कम 6 अक्षर का होना चाहिए।',
     'auth.sessionExpired': 'आपका सत्र खत्म हो गया है। कृपया दोबारा लॉग इन कीजिए।',
     'auth.accountDeleted': 'आपका खाता हटा दिया गया है।',
+    'auth.wrongPassword': 'आपका मौजूदा पासवर्ड सही नहीं है। दोबारा कोशिश कीजिए।',
+    'auth.samePassword': 'कृपया ऐसा नया पासवर्ड चुनिए जो पुराने से अलग हो।',
+    'auth.passwordChanged': 'आपका पासवर्ड बदल दिया गया है।',
 
     'stock.whichItem': 'कौन सा सामान बिका, दोबारा बोलिए।',
     'stock.reduced': '{qty} {title} कम कर दिया। अब {left} बचे हैं।',
