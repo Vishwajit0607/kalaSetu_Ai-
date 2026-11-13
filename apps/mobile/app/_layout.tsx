@@ -151,6 +151,10 @@ export default function RootLayout() {
               name="listing/[id]"
               options={{ presentation: 'card', animation: 'slide_from_right' }}
             />
+            <Stack.Screen
+              name="account/change-password"
+              options={{ presentation: 'card', animation: 'slide_from_right' }}
+            />
           </Stack>
         </QueryClientProvider>
       </SafeAreaProvider>
