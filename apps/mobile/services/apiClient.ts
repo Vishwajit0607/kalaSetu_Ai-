@@ -354,6 +354,41 @@ export interface CommitProductBody {
 
 const json = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
 
+/* ------------------------------------------------------------------------
+ * Account security: activity trail, password change, data export
+ * --------------------------------------------------------------------- */
+
+export type AuthEventType = 'signup' | 'login' | 'login_failed' | 'logout' | 'password_changed';
+
+export interface AuthEvent {
+  id: string;
+  event_type: AuthEventType;
+  /** Already masked by the server (203.0.113.x). */
+  ip: string | null;
+  user_agent: string | null;
+  created_at: string;
+}
+
+export interface ActivityPage {
+  events: AuthEvent[];
+  /** Pass as `before` for the next (older) page; null when there is none. */
+  next_before: string | null;
+}
+
+/** Everything stored about the signed-in artisan. */
+export interface DataExport {
+  exported_at: string;
+  artisan: ArtisanRow;
+  products: unknown[];
+  stock_movements: unknown[];
+  inquiries_received: unknown[];
+  inquiries_sent: unknown[];
+  security_events: unknown[];
+  /** Lists that were cut at the server's row cap. */
+  truncated: string[];
+  counts: Record<string, number>;
+}
+
 export const api = {
   health: () => request<{ status: string }>('/health', {}, 6000, { auth: false }),
 
@@ -380,6 +415,29 @@ export const api = {
   }) => request<{ artisan: ArtisanRow }>('/v1/me', { method: 'PATCH', body: JSON.stringify(body) }),
 
   deleteAccount: () => request<void>('/v1/me', { method: 'DELETE' }, 60_000),
+
+  /**
+   * End the session on the server too, so the token cannot be reused. Short
+   * timeout: the caller signs out on the phone regardless of how this goes.
+   */
+  logout: (allDevices = false) =>
+    request<void>('/v1/auth/logout', json({ all_devices: allDevices }), 8_000),
+
+  /** A wrong current password comes back as a 400 (never a 401, which would log the artisan out). */
+  changePassword: (body: { current_password: string; new_password: string }) =>
+    request<{ changed: true; spoken_hi: string }>('/v1/me/password', json(body)),
+
+  /** The artisan's own security trail, newest first. */
+  activity: (params: { limit?: number; before?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.before) query.set('before', params.before);
+    const qs = query.toString();
+    return request<ActivityPage>(`/v1/me/activity${qs ? `?${qs}` : ''}`);
+  },
+
+  /** Everything stored about the artisan, as one JSON document. */
+  exportMyData: () => request<DataExport>('/v1/me/export', {}, 60_000),
 
   /* Studio: either a fresh capture (fileUri) or a re-edit of an uploaded one. */
   editPhoto: (params: {
