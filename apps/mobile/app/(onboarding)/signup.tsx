@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { ScreenShell } from '@/components/ui/ScreenShell';
 import { SplitHeading } from '@/components/ui/SplitHeading';
 import { LimeCircleButton } from '@/components/ui/LimeCircleButton';
+import { FormField } from '@/components/ui/FormField';
 import { GlowingTimeline, type TimelineNode } from '@/components/ui/GlowingTimeline';
 import { VoiceOrbRecorder } from '@/components/voice/VoiceOrbRecorder';
-import { colors, radii, typography } from '@/theme/tokens';
+import { colors, typography } from '@/theme/tokens';
 import { api, ApiError, toSession } from '@/services/apiClient';
 import { speak, stopSpeaking } from '@/services/speech';
 import { isValidPassword, isValidPhone } from '@/services/phone';
@@ -214,7 +215,7 @@ export default function SignupScreen() {
 
       {/* Correction fields - secondary to voice, but always reachable. */}
       <View className="mt-2" style={{ gap: 10 }}>
-        <Field
+        <FormField
           label={t('profile.field.name')}
           value={fullName}
           onChangeText={setFullName}
@@ -222,21 +223,21 @@ export default function SignupScreen() {
           autoCapitalize="words"
           onFocus={() => setStep('name')}
         />
-        <Field
+        <FormField
           label={t('profile.field.craft')}
           value={craftCategory}
           onChangeText={setCraftCategory}
           placeholder={t('profile.placeholder.craft')}
           onFocus={() => setStep('craft')}
         />
-        <Field
+        <FormField
           label={t('profile.field.village')}
           value={clusterLocation}
           onChangeText={setClusterLocation}
           placeholder={t('profile.placeholder.village')}
           onFocus={() => setStep('village')}
         />
-        <Field
+        <FormField
           label={t('profile.field.phone')}
           value={phoneNumber}
           onChangeText={setPhoneNumber}
@@ -246,7 +247,7 @@ export default function SignupScreen() {
           textContentType="telephoneNumber"
           onFocus={() => setStep('phone')}
         />
-        <Field
+        <FormField
           label={t('profile.field.password')}
           value={password}
           onChangeText={setPassword}
@@ -333,41 +334,5 @@ export default function SignupScreen() {
         </Text>
       </Pressable>
     </ScreenShell>
-  );
-}
-
-function Field({
-  label,
-  trailing,
-  ...inputProps
-}: { label: string; trailing?: React.ReactNode } & React.ComponentProps<typeof TextInput>) {
-  return (
-    <View>
-      <Text
-        className="mb-1 font-heading"
-        style={{ color: colors.textMutedSage, fontSize: typography.label - 1, letterSpacing: 0.8 }}
-      >
-        {label}
-      </Text>
-      <View
-        className="flex-row items-center"
-        style={{
-          minHeight: 52,
-          borderRadius: radii.card,
-          paddingHorizontal: 16,
-          backgroundColor: colors.surfaceCharcoal,
-          borderWidth: 1,
-          borderColor: colors.borderHairline,
-        }}
-      >
-        <TextInput
-          accessibilityLabel={label}
-          placeholderTextColor={colors.textMutedSage}
-          style={{ flex: 1, color: colors.textPureWhite, fontSize: typography.body, minHeight: 50 }}
-          {...inputProps}
-        />
-        {trailing}
-      </View>
-    </View>
   );
 }
