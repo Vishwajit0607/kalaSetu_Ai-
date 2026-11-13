@@ -383,4 +383,91 @@ export const marketplaceRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.send({ inquiries });
     },
   );
+
+  /**
+   * POST /v1/marketplace/inquiries
+   *
+   * Send a wholesale / B2B inquiry to another artisan for a specific product.
+   * Sender identity is strictly derived from verified token (buyer_artisan_id = request.artisanId).
+   * Self-inquiries and duplicate submissions are blocked.
+   */
+  fastify.post('/inquiries', async (request, reply) => {
+    const body = z
+      .object({
+        product_id: z.string().uuid(),
+        message_text: z.string().min(5).max(2000),
+        requested_quantity: z.number().int().min(1).optional(),
+        offered_price_inr: z.number().positive().optional(),
+        channel: z.enum(['ondc', 'gem', 'b2b']).default('b2b'),
+        source_language_code: z.string().default('en-IN'),
+      })
+      .parse(request.body);
+
+    const buyerId = request.artisanId as string;
+
+    // 1. Fetch product to determine recipient
+    const { data: product, error: prodErr } = await supabase()
+      .from('products')
+      .select('id, artisan_id, title_en, title_hi')
+      .eq('id', body.product_id)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (prodErr) return reply.internalServerError(prodErr.message);
+    if (!product) return reply.notFound('product not found');
+
+    // 2. Prevent self-inquiry
+    if (product.artisan_id === buyerId) {
+      return reply.badRequest('cannot send inquiry to yourself');
+    }
+
+    // 3. Fetch buyer profile to record name & phone
+    const { data: buyer, error: buyerErr } = await supabase()
+      .from('artisans')
+      .select('id, full_name, phone_number')
+      .eq('id', buyerId)
+      .maybeSingle();
+
+    if (buyerErr || !buyer) {
+      return reply.internalServerError('buyer profile not found');
+    }
+
+    // 4. Duplicate guard: check for identical pending inquiry within 60s
+    const sixtySecondsAgo = new Date(Date.now() - 60_000).toISOString();
+    const { data: existing } = await supabase()
+      .from('buyer_inquiries')
+      .select('id')
+      .eq('buyer_artisan_id', buyerId)
+      .eq('product_id', body.product_id)
+      .eq('message_text', body.message_text)
+      .gte('created_at', sixtySecondsAgo)
+      .maybeSingle();
+
+    if (existing) {
+      return reply.conflict('duplicate inquiry detected');
+    }
+
+    // 5. Insert inquiry
+    const { data: inquiry, error: insertErr } = await supabase()
+      .from('buyer_inquiries')
+      .insert({
+        artisan_id: product.artisan_id,
+        buyer_artisan_id: buyerId,
+        product_id: body.product_id,
+        buyer_name: buyer.full_name,
+        buyer_phone: buyer.phone_number,
+        channel: body.channel,
+        message_text: body.message_text,
+        requested_quantity: body.requested_quantity ?? null,
+        offered_price_inr: body.offered_price_inr ?? null,
+        source_language_code: body.source_language_code,
+        status: 'new',
+      })
+      .select('*')
+      .single();
+
+    if (insertErr) return reply.internalServerError(insertErr.message);
+
+    return reply.status(201).send({ inquiry });
+  });
 };
