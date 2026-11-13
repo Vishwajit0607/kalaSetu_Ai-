@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { removeMedia, storagePathFromUrl, supabase } from './supabase.service.js';
 import { isMissingTable } from './missingSchema.js';
+import { translateText } from './sarvam.service.js';
 import { MAX_GALLERY, cleanGallery } from './gallery.js';
 import type { DimensionsCm, Product } from '../types/index.js';
 
@@ -374,4 +375,128 @@ export async function listPriceHistory(
   const hasMore = rows.length > options.limit;
   const entries = withChanges(rows).slice(0, options.limit);
   return { history: entries, next_before: hasMore ? (entries.at(-1)?.changed_at ?? null) : null };
+}
+
+/* ---------------------------------------------------------------- retranslate */
+
+/**
+ * Each request to the translator is kept well under any per-request size limit: a
+ * 5,000-character description goes in as several sentence-aligned pieces rather than
+ * one big one that might be refused or cut off.
+ */
+export const TRANSLATE_CHUNK = 900;
+
+/**
+ * Split text into pieces of at most `max` characters, preferring to break between
+ * sentences (. ! ? the Devanagari danda, or a new line), then between words, and only
+ * as a last resort in the middle of a word. Pieces re-join, with a space, to the
+ * original words in order.
+ */
+export function splitForTranslation(text: string, max = TRANSLATE_CHUNK): string[] {
+  const clean = text.trim();
+  if (clean.length === 0) return [];
+  if (clean.length <= max) return [clean];
+
+  // Sentences, each broken further if it alone is too long.
+  const pieces: string[] = [];
+  for (const sentence of clean.split(/(?<=[.!?\u0964\n])\s+/u)) {
+    if (sentence.length <= max) {
+      pieces.push(sentence);
+      continue;
+    }
+    let rest = sentence;
+    while (rest.length > max) {
+      const cut = rest.lastIndexOf(' ', max);
+      const at = cut > 0 ? cut : max; // no space to break at: cut the word
+      pieces.push(rest.slice(0, at).trim());
+      rest = rest.slice(at).trim();
+    }
+    if (rest) pieces.push(rest);
+  }
+
+  // Pack pieces into chunks without exceeding the limit.
+  const chunks: string[] = [];
+  let current = '';
+  for (const piece of pieces) {
+    if (current && current.length + 1 + piece.length > max) {
+      chunks.push(current);
+      current = piece;
+    } else {
+      current = current ? `${current} ${piece}` : piece;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+type ListingLanguage = 'en-IN' | 'hi-IN';
+
+async function translateLong(text: string, from: ListingLanguage, to: ListingLanguage): Promise<string> {
+  const parts: string[] = [];
+  // One at a time: gentle on the vendor, and the order of the pieces is the order of the text.
+  for (const chunk of splitForTranslation(text)) {
+    const result = await translateText({ text: chunk, sourceLanguageCode: from, targetLanguageCode: to });
+    if (result.text.trim()) parts.push(result.text.trim());
+  }
+  return parts.join(' ');
+}
+
+export interface RetranslateResult {
+  from: ListingLanguage;
+  to: ListingLanguage;
+  /** What the other language's title and description would become (a field is absent if there was nothing to translate). */
+  translations: { title?: string; description?: string };
+  applied: boolean;
+  /** The product after the change; null for a preview. */
+  product: Product | null;
+}
+
+/**
+ * Keep the Hindi and English text in step after one of them has been edited, using the
+ * same Sarvam translation the listing is first written with.
+ *
+ * By default this is a PREVIEW: it returns what the other language would say and
+ * changes nothing, so the artisan can read it, fix it, and only then save. Pass
+ * `apply: true` to write it. It never touches the language it translates FROM.
+ */
+export async function retranslateProduct(
+  artisanId: string,
+  productId: string,
+  options: { from: ListingLanguage; apply: boolean },
+): Promise<RetranslateResult> {
+  const product = await requireOwnedProduct(artisanId, productId);
+  const to: ListingLanguage = options.from === 'en-IN' ? 'hi-IN' : 'en-IN';
+
+  const sourceTitle = (options.from === 'en-IN' ? product.title_en : product.title_hi) ?? '';
+  const sourceDescription = (options.from === 'en-IN' ? product.description_en : product.description_hi) ?? '';
+  if (!sourceTitle.trim() && !sourceDescription.trim()) {
+    throw new ProductError('invalid', 'there is no text in that language to translate');
+  }
+
+  const translations: { title?: string; description?: string } = {};
+  if (sourceTitle.trim()) {
+    const title = (await translateLong(sourceTitle, options.from, to)).slice(0, 200).trim();
+    if (title) translations.title = title;
+  }
+  if (sourceDescription.trim()) {
+    const description = (await translateLong(sourceDescription, options.from, to)).slice(0, 5000).trim();
+    if (description) translations.description = description;
+  }
+
+  if (!options.apply || Object.keys(translations).length === 0) {
+    return { from: options.from, to, translations, applied: false, product: null };
+  }
+
+  const suffix = to === 'en-IN' ? 'en' : 'hi';
+  const patch: ProductPatch = {};
+  if (translations.title) patch[`title_${suffix}`] = translations.title;
+  if (translations.description) patch[`description_${suffix}`] = translations.description;
+
+  return {
+    from: options.from,
+    to,
+    translations,
+    applied: true,
+    product: await updateProduct(artisanId, productId, patch),
+  };
 }

@@ -3,12 +3,14 @@ import { db } from './helpers/fakeDb.js';
 import { OTHER, ME, call, setupAuth, teardownAuth } from './helpers/authedApp.js';
 
 const removeMedia = vi.hoisted(() => vi.fn());
+const translateText = vi.hoisted(() => vi.fn());
 
 vi.mock('../services/supabase.service.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../services/supabase.service.js')>();
   const { fakeSupabase } = await import('./helpers/fakeDb.js');
   return { ...original, supabase: fakeSupabase, removeMedia };
 });
+vi.mock('../services/sarvam.service.js', () => ({ translateText }));
 
 const PRODUCT = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const row = (over: Record<string, unknown> = {}) => ({
@@ -26,6 +28,7 @@ afterAll(teardownAuth);
 beforeEach(() => {
   db.reset();
   removeMedia.mockReset().mockResolvedValue(undefined);
+  translateText.mockReset().mockImplementation(async ({ text, targetLanguageCode }: { text: string; targetLanguageCode: string }) => ({ text: `[${targetLanguageCode}] ${text}` }));
 });
 
 describe('GET /v1/catalog/products/:id', () => {
@@ -178,5 +181,66 @@ describe('GET /v1/catalog/products/:id/price-history', () => {
     expect((await call('GET', '/v1/catalog/products/nope/price-history')).statusCode).toBe(400);
     expect((await call('GET', `/v1/catalog/products/${PRODUCT}/price-history`, { as: null })).statusCode).toBe(401);
     expect(db.calls).toHaveLength(0);
+  });
+});
+
+describe('POST /v1/catalog/products/:id/retranslate', () => {
+  const full = (over: Record<string, unknown> = {}) => row({ title_hi: 'old', description_en: 'A pot.', description_hi: 'old', ...over });
+
+  it('previews by default and changes nothing', async () => {
+    db.answer({ data: full() });
+    const res = await call('POST', `/v1/catalog/products/${PRODUCT}/retranslate`, { body: { from: 'en-IN' } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ from: 'en-IN', to: 'hi-IN', applied: false, product: null, translations: { title: '[hi-IN] Blue Pot' } });
+    expect(db.argsOf('update')).toBeUndefined();
+  });
+
+  it('saves the translation when asked, and returns the updated product', async () => {
+    db.answer({ data: full() }, { data: full() }, { data: full({ title_hi: '[hi-IN] Blue Pot' }) });
+    const res = await call('POST', `/v1/catalog/products/${PRODUCT}/retranslate`, { body: { from: 'en-IN', apply: true } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ applied: true, product: { title_hi: '[hi-IN] Blue Pot' } });
+  });
+
+  it('is a 404 for someone else\'s product, and never reaches the translator', async () => {
+    db.answer({ data: null });
+    expect((await call('POST', `/v1/catalog/products/${PRODUCT}/retranslate`, { as: OTHER, body: { from: 'en-IN' } })).statusCode).toBe(404);
+    expect(translateText).not.toHaveBeenCalled();
+  });
+
+  it('is a 400 when there is no text in that language to translate', async () => {
+    db.answer({ data: row({ title_en: '', description_en: '' }) });
+    expect((await call('POST', `/v1/catalog/products/${PRODUCT}/retranslate`, { body: { from: 'en-IN' } })).statusCode).toBe(400);
+  });
+
+  it('rejects a missing or unknown language, extra fields, and a non-boolean apply', async () => {
+    for (const body of [{}, { from: 'fr-FR' }, { from: 'en-IN', apply: 'yes' }, { from: 'en-IN', title_hi: 'sneaky' }]) {
+      expect((await call('POST', `/v1/catalog/products/${PRODUCT}/retranslate`, { body })).statusCode).toBe(400);
+    }
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it('requires a token', async () => {
+    expect((await call('POST', `/v1/catalog/products/${PRODUCT}/retranslate`, { as: null, body: { from: 'en-IN' } })).statusCode).toBe(401);
+    expect(translateText).not.toHaveBeenCalled();
+  });
+
+  it('is rate limited, because every call spends translation credits', async () => {
+    const { buildServer } = await import('../index.js');
+    const { tokenFor } = await import('./helpers/authedApp.js');
+    const app = await buildServer();
+    const headers = { authorization: `Bearer ${await tokenFor(ME)}` };
+    const statuses: number[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      db.answer({ data: full() });
+      const res = await app.inject({ method: 'POST', url: `/v1/catalog/products/${PRODUCT}/retranslate`, headers, payload: { from: 'en-IN' } });
+      statuses.push(res.statusCode);
+    }
+    await app.close();
+
+    expect(statuses.slice(0, 10).every((code) => code === 200)).toBe(true);
+    expect(statuses.slice(10)).toEqual([429, 429]);
   });
 });

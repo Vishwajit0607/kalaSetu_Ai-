@@ -6,6 +6,7 @@ import {
   productPatchSchema,
   requireOwnedProduct,
   restoreProduct,
+  retranslateProduct,
   softDeleteProduct,
   updateProduct,
 } from '../services/product.service.js';
@@ -21,6 +22,9 @@ import {
  */
 
 const idParams = z.object({ id: z.string().uuid() });
+
+/** Every translation spends Sarvam credits, so it is limited more tightly than a plain read. */
+const translateLimit = { rateLimit: { max: 10, timeWindow: '1 minute' } } as const;
 
 /** A ProductError becomes the matching HTTP error; anything else is a real failure. */
 function sendProductError(reply: FastifyReply, error: unknown) {
@@ -96,6 +100,27 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
       .parse(request.query);
     try {
       return reply.send(await listPriceHistory(request.artisanId as string, id, query));
+    } catch (error) {
+      return sendProductError(reply, error);
+    }
+  });
+
+  /**
+   * POST /v1/catalog/products/:id/retranslate
+   * Body: { from: 'en-IN' | 'hi-IN', apply?: boolean }
+   *
+   * Translates the title and description of the `from` language into the other one.
+   * By default (apply false) it only PREVIEWS, so nothing is overwritten until the
+   * artisan has seen the result; apply true saves it.
+   */
+  fastify.post<{ Params: { id: string } }>('/:id/retranslate', { config: translateLimit }, async (request, reply) => {
+    const { id } = idParams.parse(request.params);
+    const body = z
+      .object({ from: z.enum(['en-IN', 'hi-IN']), apply: z.boolean().default(false) })
+      .strict()
+      .parse(request.body);
+    try {
+      return reply.send(await retranslateProduct(request.artisanId as string, id, body));
     } catch (error) {
       return sendProductError(reply, error);
     }
