@@ -299,6 +299,47 @@ export default function CommandCenterScreen() {
         />
       </View>
 
+      {/* Insights card – links to the analytics screen */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open business insights and analytics"
+        onPress={() => router.push('/analytics')}
+        className="mt-5 flex-row items-center rounded-bento p-4"
+        style={{
+          backgroundColor: colors.surfaceElevated,
+          borderWidth: 1,
+          borderColor: colors.borderHairline,
+        }}
+      >
+        <View
+          style={{
+            width: 42,
+            height: 42,
+            borderRadius: 21,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(168, 235, 52, 0.14)',
+          }}
+        >
+          <Ionicons name="bar-chart-outline" size={20} color={colors.electricLime} />
+        </View>
+        <View className="ml-3 flex-1">
+          <Text
+            className="font-heading"
+            style={{ color: colors.textPureWhite, fontSize: typography.body - 1 }}
+          >
+            Business Insights
+          </Text>
+          <Text
+            className="mt-0.5 font-body"
+            style={{ color: colors.textMutedSage, fontSize: typography.label - 1 }}
+          >
+            Stock value, sales trends & buyer inquiries
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.textMutedSage} />
+      </Pressable>
+
       <AccountCard />
     </ScreenShell>
   );
