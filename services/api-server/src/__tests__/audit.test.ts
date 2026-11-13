@@ -7,7 +7,7 @@ vi.mock('../services/supabase.service.js', async (importOriginal) => {
   return { ...original, supabase: fakeSupabase };
 });
 
-import { clip, eventContext, listAuthEvents, maskIp, recordAuthEvent } from '../services/audit.service.js';
+import { clip, eventContext, listAuthEvents, maskIp, noteFailedLogin, recordAuthEvent } from '../services/audit.service.js';
 
 const ARTISAN = 'aaaaaaaa-0000-0000-0000-000000000001';
 
@@ -106,5 +106,31 @@ describe('listAuthEvents', () => {
   it('does not hide an unrelated failure', async () => {
     db.answer({ error: { code: '08006', message: 'connection failure' } });
     await expect(listAuthEvents(ARTISAN, { limit: 5 })).rejects.toThrow(/connection failure/);
+  });
+});
+
+describe('noteFailedLogin', () => {
+  it('records a failed login against the account that has that number', async () => {
+    db.answer({ data: { id: ARTISAN } }, { data: null });
+    await noteFailedLogin('98765 43210', { ip: '203.0.113.9' });
+
+    expect(db.allOf('eq')).toContainEqual(['phone_number', '+919876543210']);
+    expect(db.argsOf('insert')).toMatchObject([{ artisan_id: ARTISAN, event_type: 'login_failed' }]);
+  });
+
+  it('records nothing for a number nobody has registered', async () => {
+    db.answer({ data: null });
+    await noteFailedLogin('9876543210');
+    expect(db.argsOf('insert')).toBeUndefined();
+  });
+
+  it('records nothing, and does not even query, for text that is not a phone number', async () => {
+    await noteFailedLogin('hello');
+    expect(db.calls).toHaveLength(0);
+  });
+
+  it('never throws, even if the database is down', async () => {
+    db.answer({ error: { code: '08006', message: 'down' } });
+    await expect(noteFailedLogin('9876543210')).resolves.toBeUndefined();
   });
 });

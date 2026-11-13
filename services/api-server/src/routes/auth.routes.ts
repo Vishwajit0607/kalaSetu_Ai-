@@ -9,6 +9,7 @@ import {
   signUp,
 } from '../services/auth.service.js';
 import { supabase } from '../services/supabase.service.js';
+import { eventContext, noteFailedLogin, recordAuthEvent } from '../services/audit.service.js';
 import { requestLanguage } from '../plugins/auth.js';
 import { spokenFor, type SpokenKey } from '../i18n.js';
 
@@ -72,6 +73,8 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
         clusterLocation: body.cluster_location ?? null,
         preferredLanguage: body.preferred_language,
       });
+      // Not awaited: the audit trail must never slow down or break the signup.
+      void recordAuthEvent(result.artisan.id, 'signup', eventContext(request));
       return reply.code(201).send(result);
     } catch (error) {
       if (error instanceof AuthError) return sendAuthError(request, reply, error);
@@ -82,9 +85,15 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post('/login', { config: credentialLimit }, async (request, reply) => {
     const body = loginSchema.parse(request.body);
     try {
-      return reply.send(await signIn(body));
+      const result = await signIn(body);
+      void recordAuthEvent(result.artisan.id, 'login', eventContext(request));
+      return reply.send(result);
     } catch (error) {
-      if (error instanceof AuthError) return sendAuthError(request, reply, error);
+      if (error instanceof AuthError) {
+        // Not awaited, on purpose: see noteFailedLogin.
+        if (error.code === 'invalid_credentials') void noteFailedLogin(body.phone, eventContext(request));
+        return sendAuthError(request, reply, error);
+      }
       throw error;
     }
   });

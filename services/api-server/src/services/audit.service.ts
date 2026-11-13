@@ -1,4 +1,5 @@
 import type { FastifyRequest } from 'fastify';
+import { normalizePhone } from './auth.service.js';
 import { supabase } from './supabase.service.js';
 
 /**
@@ -121,4 +122,30 @@ export async function listAuthEvents(
     events: page,
     next_before: rows.length > options.limit ? (page.at(-1)?.created_at ?? null) : null,
   };
+}
+
+/**
+ * A login with the wrong password: record it against the account, if there is one.
+ *
+ * Callers must NOT await this. The login endpoint answers identically for "no such
+ * number" and "wrong password" so nobody can probe which numbers have accounts;
+ * awaiting an extra lookup and insert only in the second case would put that
+ * difference back, in the response time. It never throws.
+ */
+export async function noteFailedLogin(phone: string, context: AuthEventContext = {}): Promise<void> {
+  try {
+    const normalized = normalizePhone(phone);
+    if (!normalized) return;
+
+    const { data } = await supabase()
+      .from('artisans')
+      .select('id')
+      .eq('phone_number', normalized)
+      .maybeSingle();
+
+    const id = (data as { id?: string } | null)?.id;
+    if (id) await recordAuthEvent(id, 'login_failed', context);
+  } catch {
+    // Auditing is best effort.
+  }
 }
