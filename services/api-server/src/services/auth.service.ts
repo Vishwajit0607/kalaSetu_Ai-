@@ -249,6 +249,69 @@ export async function revokeSession(accessToken: string, scope: 'local' | 'globa
   }
 }
 
+/* ---------------------------------------------------------- password change */
+
+export interface ChangePasswordInput {
+  artisanId: string;
+  currentPassword: string;
+  newPassword: string;
+  /** The caller's own token, so their *other* sessions can be ended. */
+  accessToken: string;
+}
+
+/**
+ * Change the signed-in artisan's password.
+ *
+ * The current password is required even though the caller already has a valid
+ * token: a token proves the phone was unlocked, not that the person holding it
+ * knows the password. Without the check, anyone who picks up an unlocked phone
+ * could lock the owner out of their own account.
+ *
+ * Afterwards every OTHER session is ended, so whoever else was signed in with the
+ * old password is signed out; this one stays.
+ */
+export async function changePassword(input: ChangePasswordInput): Promise<void> {
+  if (input.newPassword.length < MIN_PASSWORD_LENGTH) {
+    throw new AuthError(400, 'weak_password', `Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+  }
+  if (input.newPassword === input.currentPassword) {
+    throw new AuthError(400, 'same_password', 'Choose a password different from the current one');
+  }
+
+  const artisan = await getArtisan(input.artisanId);
+  if (!artisan) throw new AuthError(401, 'invalid_token', 'This account no longer exists');
+
+  // 1. Prove they know the current password.
+  const check = await authClient().auth.signInWithPassword({
+    email: authEmailFor(artisan.phone_number),
+    password: input.currentPassword,
+  });
+  if (check.error || !check.data.session) {
+    const status = check.error?.status ?? 0;
+    if (status >= 500 || status === 429) {
+      throw new AuthError(502, 'upstream', 'Password change is temporarily unavailable');
+    }
+    // 400, not 401: the mobile client treats a 401 as "session expired" and would
+    // log the artisan out for a mistyped current password.
+    throw new AuthError(400, 'wrong_password', 'The current password is not correct');
+  }
+
+  // The check created a session we do not need. End it so it does not linger.
+  await supabase().auth.admin.signOut(check.data.session.access_token, 'local').catch(() => undefined);
+
+  // 2. Set the new one.
+  const updated = await supabase().auth.admin.updateUserById(input.artisanId, { password: input.newPassword });
+  if (updated.error) {
+    if (/password/i.test(updated.error.message) && /(weak|short|least|character)/i.test(updated.error.message)) {
+      throw new AuthError(400, 'weak_password', updated.error.message);
+    }
+    throw new AuthError(502, 'upstream', `Could not change the password: ${updated.error.message}`);
+  }
+
+  // 3. End every other session. Best effort: the password has already changed.
+  await supabase().auth.admin.signOut(input.accessToken, 'others').catch(() => undefined);
+}
+
 /* ---------------------------------------------------------------- profile */
 
 export async function getArtisan(id: string): Promise<Artisan | null> {
