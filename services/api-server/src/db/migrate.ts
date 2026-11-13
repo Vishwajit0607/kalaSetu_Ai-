@@ -2,9 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
+import { listMigrationFiles } from './migrationFiles.js';
 
 /**
- * Applies migrations.sql against the Supabase Postgres instance.
+ * Applies migrations.sql and then every numbered file in ./migrations, in order,
+ * in one transaction (all or nothing).
  * Needs a direct connection string (Supabase dashboard -> Database -> URI),
  * not the REST URL, because DDL cannot go through PostgREST.
  */
@@ -18,15 +20,19 @@ async function run(): Promise<void> {
   }
 
   const here = dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(join(here, 'migrations.sql'), 'utf8');
+  const folder = join(here, 'migrations');
+  const files = ['migrations.sql', ...(await listMigrationFiles(folder)).map((name) => `migrations/${name}`)];
 
   const client = new Client({ connectionString, ssl: { rejectUnauthorized: false } });
   await client.connect();
   try {
     await client.query('BEGIN');
-    await client.query(sql);
+    for (const file of files) {
+      await client.query(await readFile(join(here, file), 'utf8'));
+      console.log(`  applied ${file}`);
+    }
     await client.query('COMMIT');
-    console.log('✓ migrations applied');
+    console.log(`✓ ${files.length} migration file(s) applied`);
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
