@@ -19,6 +19,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
       .from('products')
       .select('*')
       .eq('artisan_id', request.artisanId as string)
+      .is('deleted_at', null)
       .order('updated_at', { ascending: false });
 
     if (error) return reply.internalServerError(error.message);
@@ -107,7 +108,8 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
     const { data, error } = await supabase()
       .from('products')
       .select('*')
-      .eq('artisan_id', request.artisanId as string);
+      .eq('artisan_id', request.artisanId as string)
+      .is('deleted_at', null);
 
     if (error) return reply.internalServerError(error.message);
 
@@ -176,6 +178,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
         // Scoped to the caller: without this, any product id from any artisan
         // returned its SKU and prices.
         .eq('artisan_id', request.artisanId as string)
+        .is('deleted_at', null)
         .maybeSingle();
 
       if (error || !data) return reply.notFound('product not found');
@@ -210,6 +213,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
       .from('products')
       .select('sku, title_hi, title_en, stock_quantity')
       .eq('artisan_id', request.artisanId as string)
+      .is('deleted_at', null)
       .lte('stock_quantity', LOW_STOCK_THRESHOLD);
 
     if (error) return reply.internalServerError(error.message);
