@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { AuthError, changePassword } from '../services/auth.service.js';
-import { eventContext, recordAuthEvent } from '../services/audit.service.js';
+import { eventContext, listAuthEvents, recordAuthEvent } from '../services/audit.service.js';
 import { bearerToken, requestLanguage } from '../plugins/auth.js';
 import { spokenFor } from '../i18n.js';
 import { sendAuthError } from './auth.routes.js';
@@ -44,5 +44,20 @@ export const accountRoutes: FastifyPluginAsync = async (fastify) => {
       changed: true,
       spoken_hi: spokenFor(requestLanguage(request))('auth.passwordChanged'),
     });
+  });
+
+  /**
+   * GET /v1/me/activity - the artisan's own security trail, newest first.
+   * Paged with `before` (the previous page's `next_before`).
+   */
+  fastify.get<{ Querystring: unknown }>('/activity', async (request, reply) => {
+    const query = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(50).default(20),
+        before: z.string().datetime({ offset: true }).optional(),
+      })
+      .parse(request.query);
+
+    return reply.send(await listAuthEvents(request.artisanId as string, query));
   });
 };
