@@ -77,7 +77,7 @@ kalasetu-ai/
         ├── routes/               auth · vision · speech · catalog · inventory · marketplace
         ├── services/             auth · supabase · photoroom · sarvam · gemini · bharatcode ·
         │                         catalogOrchestrator · pricing · listings · http
-        ├── db/                   migrations.sql · migrate.ts
+        ├── db/                   migrations.sql · migrations/ (numbered) · migrate.ts
         └── __tests__/            Vitest
 ```
 
@@ -260,6 +260,7 @@ erDiagram
   ARTISANS ||--o{ PRODUCTS : owns
   ARTISANS ||--o{ BUYER_INQUIRIES : receives
   ARTISANS ||--o{ STOCK_MOVEMENTS : records
+  ARTISANS ||--o{ AUTH_EVENTS : "security trail"
   PRODUCTS ||--o{ BUYER_INQUIRIES : "about (SET NULL)"
   PRODUCTS ||--o{ STOCK_MOVEMENTS : ledger
 ```
@@ -272,6 +273,7 @@ Defined in [`services/api-server/src/db/migrations.sql`](services/api-server/src
 | `products` | Bilingual title/description, `seo_tags`, `hsn_code`, cost inputs (`material_cost_inr`, `labor_hours`), `dimensions_cm` (JSONB), two prices + MOQ, `stock_quantity`, `marketplace_sync_status` (JSONB), raw/enhanced image URLs, optional voice note + transcript, soft-delete `deleted_at` |
 | `buyer_inquiries` | Inbound B2B messages with the source language, requested quantity, offered price, status |
 | `stock_movements` | Audit ledger of every voice/manual/order/sync adjustment |
+| `auth_events` | Security trail: signup, login, failed login, logout, password change. Created by migration `010`; see [Account security](#account-security) |
 
 - **Cascades.** Deleting an artisan removes their products, inquiries and stock
   movements; account deletion also removes their storage objects, then the auth
@@ -301,6 +303,10 @@ All routes are under the server's base URL. Errors share one envelope (below).
 | Optional auth | `GET /v1/speech/languages` | The two supported languages |
 | Optional auth | `POST /v1/speech/transcribe` · `/translate` · `/bilingual` · `/speak` | Saaras STT, Mayura, Hindi+English in one call, Bulbul TTS (40/min anonymous, 240/min signed in) |
 | Auth | `GET` · `PATCH` · `DELETE /v1/me` | Profile; delete account and everything it owns |
+| Auth | `POST /v1/auth/logout` | End this session on the server (`all_devices: true` ends every session) |
+| Auth | `POST /v1/me/password` | Change password: verifies the current one, ends other sessions (5/min) |
+| Auth | `GET /v1/me/activity` | The artisan's own security trail, newest first, paged |
+| Auth | `GET /v1/me/export` | Everything stored about the artisan, as a JSON download (3/min) |
 | Auth | `GET /v1/vision/backdrops` · `POST /v1/vision/edit` | Backdrop presets; studio edit -> hosted URLs (`engine`, `fallback_reason` say how) |
 | Auth | `POST /v1/vision/media/remove` | Discard photos dropped from a draft (never one a saved product uses) |
 | Auth | `POST /v1/catalog/generate` | Gemini listing from a stored image URL + transcript |
@@ -412,6 +418,69 @@ new account. Passwords are Supabase's (minimum 6 characters).
 Anonymous callers can reach only the speech endpoints, because the onboarding
 screens speak and transcribe before an account exists. They are rate-limited per
 IP (40/min vs 240/min signed in) since every call spends Sarvam credits.
+
+### Account security
+
+This is the account module's work on top of sign-in: an audit trail, a real logout,
+password change, profile editing and a data export. Everything here identifies the
+caller **only** from the token.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /v1/auth/logout` | Revokes this session through the Supabase admin API, so a lost or stolen copy of the token stops working. `{ "all_devices": true }` ends every session. `204`; `502` if revocation failed (the app logs out on the phone regardless). Needs a token. |
+| `POST /v1/me/password` | `{ current_password, new_password }`. Verifies the current password first: a valid token only proves the phone was unlocked. Refuses a weak (under 6) or unchanged password, sets the new one, ends every *other* session. 5 attempts a minute. |
+| `GET /v1/me/activity?limit=&before=` | The artisan's own events, newest first. `limit` 1-50 (default 20); `before` is the previous page's `next_before`. Network addresses are masked (`203.0.113.x`). |
+| `GET /v1/me/export` | Profile, products, stock movements, inquiries received and sent, and security events as one JSON attachment. Each list is capped at 5,000 rows and a capped list is named in `truncated` rather than passed off as complete. 3 a minute. |
+
+**Errors.** `wrong_password` and `same_password` are `400`, never `401`: the mobile
+client treats a 401 as an expired session and would log the artisan out for a
+mistyped current password. Every error has a real Hindi and English sentence
+(`AUTH_SPOKEN`, covered by a test).
+
+**The audit trail** (`auth_events`, migrations `010` and `011`):
+
+- Events: `signup`, `login`, `login_failed`, `logout`, `password_changed`, each with
+  the caller's address and a length-capped user agent.
+- **Written by the server only.** Row-level security lets an artisan *read* their
+  own events and nothing else, and INSERT/UPDATE/DELETE are revoked from the public
+  roles: a trail its subject can edit is not a trail.
+- Writes are **not awaited**, so recording can neither slow nor break the action it
+  records. This also keeps the login's "same answer for a wrong password and an
+  unknown number" guarantee safe against timing: the lookup that attaches a failed
+  attempt to an account runs after the response is sent.
+- Deleting an account deletes its trail (`ON DELETE CASCADE`).
+- A real client address needs `TRUST_PROXY=true` behind a proxy such as Render (the
+  Blueprint sets it). It is off by default because trusting a forwarded header on a
+  directly reachable server lets a caller claim any address.
+
+**Applying the migrations.** Paste `010_auth_events.sql` and then
+`011_auth_events_security.sql` (in `services/api-server/src/db/migrations/`) into the
+Supabase SQL editor, or run `npm run db:migrate` with `DATABASE_URL` set. Then paste
+`migrations/verify/010_011_smoke.sql`: it prints `ALL CHECKS PASSED` (and rolls back,
+so it leaves nothing behind). Until the migrations are applied the app keeps working:
+no events are recorded, the activity list is empty and the export's security list is
+empty.
+
+**On the phone.** *Account* on the home screen now offers Edit profile (name, craft,
+village: only changed fields are sent), Change password (current + new twice, live
+strength bar, per-field errors), Account activity (plain-language trail, with a
+warning and a shortcut to Change password after three wrong-password attempts in 24
+hours), Log out (server-side, capped at 2.5 s so a slow link never blocks logging out
+of the phone), Log out of all devices, and Download my data (written to a file, shared,
+then deleted from the cache because it holds personal data). The mobile number is shown
+but cannot be changed: it is the login, and changing it needs a verified phone.
+
+**Tests** (246 backend in 22 files, 170 mobile in 14 suites at the time of writing):
+service tests for audit, password change and export; route tests for each endpoint;
+`account-isolation.test.ts`, which calls every endpoint as two different people while
+the request names a third, and was checked by mutation (making `PATCH /v1/me` trust a
+body id, or the export a query id, fails it); `account-journey.test.ts`, which runs
+sign up, a wrong password, login, password change, paged activity, export and logout
+against a small in-memory database; and the SQL smoke test above.
+
+**Limits.** No password recovery (needs an SMS provider). No alert is sent when
+someone guesses a password: the warning appears when the artisan next looks at their
+activity. Events are kept until the account is deleted.
 
 ## Studio photos
 
