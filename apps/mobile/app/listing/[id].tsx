@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
@@ -9,6 +9,7 @@ import { HaloProductStage, StageActionPill } from '@/components/ui/HaloProductSt
 import { Badge } from '@/components/ui/Badge';
 import { GalleryThumbs } from '@/components/ui/GalleryThumbs';
 import { PriceTile, SpecRow } from '@/components/ui/ProductFacts';
+import { InquiryStatusPill } from '@/components/ui/InquiryStatusPill';
 import { colors, radii, spacing, typography } from '@/theme/tokens';
 import {
   api,
@@ -50,6 +51,11 @@ export default function ListingDetailScreen() {
   });
 
   const [pickedImage, setPickedImage] = useState<string | null>(null);
+  const [showEnquiry, setShowEnquiry] = useState(false);
+  const [enquiryMsg, setEnquiryMsg] = useState('');
+  const [enquiryQty, setEnquiryQty] = useState('');
+  const [enquiryPrice, setEnquiryPrice] = useState('');
+  const [submittingEnquiry, setSubmittingEnquiry] = useState(false);
 
   useEffect(
     () => () => {
@@ -228,6 +234,145 @@ export default function ListingDetailScreen() {
           last
         />
       </View>
+
+      {/* Send enquiry button & form — only for OTHER artisans' products */}
+      {!listing.is_mine && !soldOut ? (
+        <View className="mt-6">
+          {!showEnquiry ? (
+            <PrimaryButton
+              label="Send Enquiry"
+              onPress={() => setShowEnquiry(true)}
+            />
+          ) : (
+            <View
+              className="rounded-bento p-5"
+              style={{
+                backgroundColor: colors.surfaceCharcoal,
+                borderWidth: 1,
+                borderColor: colors.electricLime,
+              }}
+            >
+              <Text
+                className="font-heading"
+                style={{ color: colors.textPureWhite, fontSize: typography.body, marginBottom: 12 }}
+              >
+                Send an Enquiry
+              </Text>
+
+              <TextInput
+                placeholder="Your message to the seller…"
+                placeholderTextColor={colors.textMutedSage}
+                value={enquiryMsg}
+                onChangeText={setEnquiryMsg}
+                multiline
+                numberOfLines={3}
+                style={{
+                  color: colors.textPureWhite,
+                  fontSize: typography.body - 1,
+                  backgroundColor: colors.surfaceElevated,
+                  borderRadius: radii.card,
+                  padding: 12,
+                  borderWidth: 1,
+                  borderColor: colors.borderHairline,
+                  minHeight: 80,
+                  textAlignVertical: 'top',
+                  marginBottom: 10,
+                }}
+              />
+
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TextInput
+                  placeholder="Qty"
+                  placeholderTextColor={colors.textMutedSage}
+                  value={enquiryQty}
+                  onChangeText={setEnquiryQty}
+                  keyboardType="numeric"
+                  style={{
+                    flex: 1,
+                    color: colors.textPureWhite,
+                    fontSize: typography.body - 1,
+                    backgroundColor: colors.surfaceElevated,
+                    borderRadius: radii.card,
+                    padding: 12,
+                    borderWidth: 1,
+                    borderColor: colors.borderHairline,
+                  }}
+                />
+                <TextInput
+                  placeholder="Price ₹"
+                  placeholderTextColor={colors.textMutedSage}
+                  value={enquiryPrice}
+                  onChangeText={setEnquiryPrice}
+                  keyboardType="numeric"
+                  style={{
+                    flex: 1,
+                    color: colors.textPureWhite,
+                    fontSize: typography.body - 1,
+                    backgroundColor: colors.surfaceElevated,
+                    borderRadius: radii.card,
+                    padding: 12,
+                    borderWidth: 1,
+                    borderColor: colors.borderHairline,
+                  }}
+                />
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <View style={{ flex: 1 }}>
+                  <PrimaryButton
+                    label="Cancel"
+                    muted
+                    onPress={() => {
+                      setShowEnquiry(false);
+                      setEnquiryMsg('');
+                      setEnquiryQty('');
+                      setEnquiryPrice('');
+                    }}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  {submittingEnquiry ? (
+                    <View style={{ marginTop: 16, alignItems: 'center' }}>
+                      <ActivityIndicator color={colors.electricLime} />
+                    </View>
+                  ) : (
+                    <PrimaryButton
+                      label="Send"
+                      onPress={async () => {
+                        if (!enquiryMsg.trim()) {
+                          Alert.alert('Message required', 'Please type a message for the seller.');
+                          return;
+                        }
+                        setSubmittingEnquiry(true);
+                        try {
+                          await api.createInquiry({
+                            product_id: listing.id,
+                            product_name: listing.title_en ?? listing.title_hi,
+                            message: enquiryMsg.trim(),
+                            ...(enquiryQty ? { requested_quantity: Number(enquiryQty) } : {}),
+                            ...(enquiryPrice ? { offered_price_inr: Number(enquiryPrice) } : {}),
+                          });
+                          setShowEnquiry(false);
+                          setEnquiryMsg('');
+                          setEnquiryQty('');
+                          setEnquiryPrice('');
+                          void speak('Enquiry sent successfully!', language);
+                        } catch (err) {
+                          const msg =
+                            err instanceof ApiError ? err.spokenHi : 'Could not send enquiry';
+                          Alert.alert('Error', msg);
+                        } finally {
+                          setSubmittingEnquiry(false);
+                        }
+                      }}
+                    />
+                  )}
+                </View>
+              </View>
+            </View>
+          )}
+        </View>
+      ) : null}
 
       {listing.is_mine ? (
         <View
