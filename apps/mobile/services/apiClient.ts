@@ -375,6 +375,59 @@ export interface ActivityPage {
   next_before: string | null;
 }
 
+/* ------------------------------------------------------------------------
+ * Inventory analytics & inquiry types (Nikhil Telkar / Developer 3)
+ * --------------------------------------------------------------------- */
+
+export type InquiryStatus = 'new' | 'replied' | 'won' | 'lost';
+
+export interface StockMovement {
+  id: string;
+  product_id: string;
+  artisan_id: string;
+  delta: number;
+  resulting_quantity: number;
+  reason: 'voice' | 'manual' | 'order' | 'sync';
+  voice_transcript: string | null;
+  created_at: string;
+}
+
+export interface StockMovementsPage {
+  movements: StockMovement[];
+  total: number;
+}
+
+export interface InventoryAnalyticsSummary {
+  total_products: number;
+  total_stock_units: number;
+  total_inventory_value_retail: number;
+  total_inventory_value_wholesale: number;
+  low_stock_count: number;
+  out_of_stock_count: number;
+}
+
+export interface DailyStockMovementTrend {
+  movement_date: string;
+  reason: string;
+  movement_count: number;
+  total_delta: number;
+  units_added: number;
+  units_sold_or_removed: number;
+}
+
+export interface BuyerInquiry {
+  id: string;
+  artisan_id: string;
+  buyer_artisan_id: string | null;
+  product_name: string;
+  message: string;
+  requested_quantity: number | null;
+  offered_price_inr: number | null;
+  status: InquiryStatus;
+  status_updated_at: string;
+  created_at: string;
+}
+
 /** Everything stored about the signed-in artisan. */
 export interface DataExport {
   exported_at: string;
@@ -635,6 +688,45 @@ export const api = {
         audio_base64: string | null;
       }>;
     }>(`/v1/marketplace/inquiries?language_code=${encodeURIComponent(languageCode)}&speak=${speak}`),
+
+  /* ---------- Inventory analytics (Developer 3) ---------- */
+
+  /** Paginated stock movements for one product. */
+  stockMovements: (productId: string, params: { limit?: number; offset?: number } = {}) => {
+    const query = new URLSearchParams();
+    query.set('limit', String(params.limit ?? 20));
+    query.set('offset', String(params.offset ?? 0));
+    return request<StockMovementsPage>(
+      `/v1/inventory/${encodeURIComponent(productId)}/movements?${query.toString()}`,
+    );
+  },
+
+  /** Aggregated inventory summary for the signed-in artisan. */
+  inventorySummary: () =>
+    request<{ summary: InventoryAnalyticsSummary }>('/v1/analytics/summary'),
+
+  /** Daily stock movement trend for the last N days. */
+  stockTrend: (days = 30) =>
+    request<{ trend: DailyStockMovementTrend[] }>(`/v1/analytics/stock-trend?days=${days}`),
+
+  /* ---------- Inquiries: send & manage (Developer 3) ---------- */
+
+  /** Send an enquiry to another artisan's listing. */
+  createInquiry: (body: {
+    product_id: string;
+    product_name: string;
+    message: string;
+    requested_quantity?: number;
+    offered_price_inr?: number;
+  }) =>
+    request<{ inquiry: BuyerInquiry }>('/v1/marketplace/inquiries', json(body)),
+
+  /** Update the status of an inquiry the artisan received. */
+  updateInquiryStatus: (inquiryId: string, status: InquiryStatus) =>
+    request<{ inquiry: BuyerInquiry }>(
+      `/v1/marketplace/inquiries/${encodeURIComponent(inquiryId)}`,
+      { method: 'PATCH', body: JSON.stringify({ status }) },
+    ),
 };
 
 export { BASE_URL };
