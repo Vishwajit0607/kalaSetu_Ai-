@@ -121,36 +121,44 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    const next = Math.max(0, parsed.match.stock_quantity - parsed.quantity);
-    const { error: updateError } = await supabase()
-      .from('products')
-      .update({ stock_quantity: next, updated_at: new Date().toISOString() })
-      .eq('id', parsed.match.id)
-      .eq('artisan_id', request.artisanId as string);
+    try {
+      const ledgerResult = await adjustStock({
+        productId: parsed.match.id,
+        artisanId: request.artisanId as string,
+        delta: -parsed.quantity,
+        reason: 'voice',
+        voiceTranscript: body.transcript,
+      });
 
-    if (updateError) return reply.internalServerError(updateError.message);
+      const next = ledgerResult.resultingQuantity;
+      const spoken = spokenFor(body.language_code);
+      // Read the product's title back in the same language as the sentence
+      // around it - a Hindi title inside an English sentence is unreadable to
+      // a text-to-speech voice.
+      const spokenTitle =
+        body.language_code === 'en-IN' ? parsed.match.title_en : parsed.match.title_hi;
 
-    const spoken = spokenFor(body.language_code);
-    // Read the product's title back in the same language as the sentence
-    // around it - a Hindi title inside an English sentence is unreadable to
-    // a text-to-speech voice.
-    const spokenTitle =
-      body.language_code === 'en-IN' ? parsed.match.title_en : parsed.match.title_hi;
+      const confirmation =
+        next <= LOW_STOCK_THRESHOLD
+          ? spoken('stock.reducedLow', { qty: parsed.quantity, title: spokenTitle, left: next })
+          : spoken('stock.reduced', { qty: parsed.quantity, title: spokenTitle, left: next });
 
-    const confirmation =
-      next <= LOW_STOCK_THRESHOLD
-        ? spoken('stock.reducedLow', { qty: parsed.quantity, title: spokenTitle, left: next })
-        : spoken('stock.reduced', { qty: parsed.quantity, title: spokenTitle, left: next });
-
-    return reply.send({
-      matched: true,
-      product_id: parsed.match.id,
-      sku: parsed.match.sku,
-      quantity_sold: parsed.quantity,
-      stock_quantity: next,
-      low_stock: next <= LOW_STOCK_THRESHOLD,
-      spoken_confirmation: confirmation,
-    });
+      return reply.send({
+        matched: true,
+        product_id: parsed.match.id,
+        sku: parsed.match.sku,
+        quantity_sold: parsed.quantity,
+        stock_quantity: next,
+        movement_id: ledgerResult.movementId,
+        low_stock: next <= LOW_STOCK_THRESHOLD,
+        spoken_confirmation: confirmation,
+      });
+    } catch (err) {
+      if (err instanceof InsufficientStockError) {
+        return reply.badRequest(err.message);
+      }
+      return reply.internalServerError(err instanceof Error ? err.message : String(err));
+    }
   });
 
   /** GET /v1/inventory/:productId/qr - printable trade-fair tag (PNG data URL). */
