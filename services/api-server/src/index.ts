@@ -28,6 +28,8 @@ export async function buildServer() {
     },
     // Studio captures from a 48MP handset camera are large.
     bodyLimit: 25 * 1024 * 1024,
+    // See TRUST_PROXY in config/env.ts: needed for a real client address behind Render.
+    trustProxy: env.TRUST_PROXY,
   });
 
   await fastify.register(sensible);

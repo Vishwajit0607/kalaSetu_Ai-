@@ -38,6 +38,22 @@ const envSchema = z.object({
    */
   STUDIO_ENGINE: z.enum(['auto', 'photoroom', 'local']).default('auto'),
 
+  /**
+   * Set to `true` when the server runs behind a reverse proxy or load balancer (as
+   * it does on Render). Behind one, the socket's address is the PROXY's, so without
+   * this every caller shares one address: the audit trail records the proxy's IP,
+   * and the per-IP rate limit on login and signup is shared by everybody at once.
+   * Left `false` otherwise, because trusting a forwarded header when the server is
+   * directly reachable would let anyone claim any address.
+   *
+   * An enum, not `z.coerce.boolean()`: that is Boolean(value), so "false" would
+   * parse as true.
+   */
+  TRUST_PROXY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(16),
   SUPABASE_STORAGE_BUCKET: z.string().default('kalasetu-media'),
