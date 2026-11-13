@@ -40,11 +40,14 @@ const loginSchema = z.object({
   password: z.string().min(1).max(72),
 });
 
-const AUTH_SPOKEN: Record<AuthError['code'], SpokenKey> = {
+/** The sentence read aloud for each error code. Exported so a test can prove none is missing. */
+export const AUTH_SPOKEN: Record<AuthError['code'], SpokenKey> = {
   invalid_credentials: 'auth.invalidCredentials',
   phone_taken: 'auth.phoneTaken',
   invalid_phone: 'auth.invalidPhone',
   weak_password: 'auth.weakPassword',
+  wrong_password: 'auth.wrongPassword',
+  same_password: 'auth.samePassword',
   invalid_token: 'auth.sessionExpired',
   upstream: 'err.upstreamDown',
 };

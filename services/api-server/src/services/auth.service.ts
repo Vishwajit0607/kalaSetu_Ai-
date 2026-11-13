@@ -28,7 +28,15 @@ import type { Artisan, SupportedLanguage } from '../types/index.js';
 
 export class AuthError extends Error {
   readonly status: number;
-  readonly code: 'invalid_credentials' | 'phone_taken' | 'invalid_phone' | 'weak_password' | 'invalid_token' | 'upstream';
+  readonly code:
+    | 'invalid_credentials'
+    | 'phone_taken'
+    | 'invalid_phone'
+    | 'weak_password'
+    | 'wrong_password'
+    | 'same_password'
+    | 'invalid_token'
+    | 'upstream';
 
   constructor(status: number, code: AuthError['code'], message: string) {
     super(message);
