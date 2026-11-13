@@ -14,6 +14,7 @@ import { api, ApiError, type ProductRow } from '@/services/apiClient';
 import { speak, stopSpeaking } from '@/services/speech';
 import { useArtisanStore } from '@/store/useArtisanStore';
 import { buildLookbookHtml, buildQrTagHtml } from '@/services/catalogExports';
+import { StockHistorySheet } from '@/components/ui/StockHistorySheet';
 import { useT } from '@/i18n';
 
 /**
@@ -38,6 +39,7 @@ export default function InventoryScreen() {
   const [busy, setBusy] = useState(false);
   const [lastAction, setLastAction] = useState<string | null>(null);
   const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [historyProduct, setHistoryProduct] = useState<ProductRow | null>(null);
 
   const inventoryQuery = useQuery({
     queryKey: ['inventory', profile?.serverId],
@@ -282,6 +284,7 @@ export default function InventoryScreen() {
                 key={product.id}
                 product={product}
                 onPress={() => router.push(`/product/${product.id}`)}
+                onHistory={() => setHistoryProduct(product)}
                 onQr={() => void showQrTag(product)}
                 onAdjust={async (delta) => {
                   if (!profile?.serverId) return;
@@ -296,6 +299,12 @@ export default function InventoryScreen() {
           </View>
         )}
       </View>
+
+      <StockHistorySheet
+        productId={historyProduct?.id ?? null}
+        productTitle={historyProduct?.title_hi || historyProduct?.title_en || ''}
+        onClose={() => setHistoryProduct(null)}
+      />
     </ScreenShell>
   );
 }
@@ -303,11 +312,13 @@ export default function InventoryScreen() {
 function ProductCard({
   product,
   onPress,
+  onHistory,
   onQr,
   onAdjust,
 }: {
   product: ProductRow;
   onPress: () => void;
+  onHistory: () => void;
   onQr: () => void;
   onAdjust: (delta: number) => Promise<void>;
 }) {
@@ -320,6 +331,7 @@ function ProductCard({
       accessibilityRole="button"
       accessibilityLabel={`${product.title_hi}. SKU ${product.sku}. ${product.stock_quantity} in stock. Wholesale ${product.recommended_wholesale_inr} rupees.`}
       onPress={onPress}
+      onLongPress={onHistory}
       className="flex-row items-center rounded-bento p-4"
       style={{
         backgroundColor: colors.surfaceCharcoal,
@@ -413,6 +425,7 @@ function ProductCard({
             icon="add"
             onPress={() => void onAdjust(1)}
           />
+          <IconChip label={`Stock history for ${product.sku}`} icon="time-outline" onPress={onHistory} />
           <IconChip label={`Print QR tag for ${product.sku}`} icon="qr-code" onPress={onQr} />
         </View>
       </View>
