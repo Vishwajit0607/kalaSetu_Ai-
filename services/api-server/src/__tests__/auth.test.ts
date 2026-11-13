@@ -153,6 +153,7 @@ describe('route protection', () => {
     ['PATCH', '/v1/catalog/products/11111111-2222-3333-4444-555555555555'],
     ['DELETE', '/v1/catalog/products/11111111-2222-3333-4444-555555555555'],
     ['POST', '/v1/catalog/products/11111111-2222-3333-4444-555555555555/restore'],
+    ['GET', '/v1/catalog/products/11111111-2222-3333-4444-555555555555/price-history'],
     ['POST', '/v1/catalog/price'],
     ['POST', '/v1/marketplace/export'],
     ['GET', '/v1/marketplace/status'],

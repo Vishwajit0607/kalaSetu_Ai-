@@ -145,3 +145,38 @@ describe('POST /v1/catalog/products/:id/restore', () => {
     expect((await call('POST', `/v1/catalog/products/${PRODUCT}/restore`, { as: null })).statusCode).toBe(401);
   });
 });
+
+describe('GET /v1/catalog/products/:id/price-history', () => {
+  const point = (n: number, retail: number) => ({ id: `h${n}`, retail_inr: String(retail), wholesale_inr: '500', source: 'edit', changed_at: `2026-11-1${n}T10:00:00.000Z` });
+
+  it('returns the history with the change from the previous price', async () => {
+    db.answer({ data: row() }, { data: [point(2, 1100), point(1, 1000)] });
+    const res = await call('GET', `/v1/catalog/products/${PRODUCT}/price-history`);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().history.map((h: { retail_inr: number; retail_change: number | null }) => [h.retail_inr, h.retail_change])).toEqual([[1100, 100], [1000, null]]);
+    expect(res.json().next_before).toBeNull();
+  });
+
+  it('is a 404 for someone else\'s product and reads no history', async () => {
+    db.answer({ data: null });
+    expect((await call('GET', `/v1/catalog/products/${PRODUCT}/price-history`, { as: OTHER })).statusCode).toBe(404);
+    expect(db.allOf('from').map((a) => a[0])).toEqual(['products']);
+  });
+
+  it('pages with limit and a cursor', async () => {
+    db.answer({ data: row() }, { data: [] });
+    await call('GET', `/v1/catalog/products/${PRODUCT}/price-history?limit=5&before=2026-11-12T10:00:00.000Z`);
+    expect(db.argsOf('limit')).toEqual([6]);
+    expect(db.argsOf('lt')).toEqual(['changed_at', '2026-11-12T10:00:00.000Z']);
+  });
+
+  it('rejects a bad limit, cursor or id, and requires a token', async () => {
+    for (const q of ['limit=0', 'limit=51', 'limit=abc', 'before=yesterday']) {
+      expect((await call('GET', `/v1/catalog/products/${PRODUCT}/price-history?${q}`)).statusCode).toBe(400);
+    }
+    expect((await call('GET', '/v1/catalog/products/nope/price-history')).statusCode).toBe(400);
+    expect((await call('GET', `/v1/catalog/products/${PRODUCT}/price-history`, { as: null })).statusCode).toBe(401);
+    expect(db.calls).toHaveLength(0);
+  });
+});

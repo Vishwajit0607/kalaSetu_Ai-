@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { removeMedia, storagePathFromUrl, supabase } from './supabase.service.js';
+import { isMissingTable } from './missingSchema.js';
 import { MAX_GALLERY, cleanGallery } from './gallery.js';
 import type { DimensionsCm, Product } from '../types/index.js';
 
@@ -292,4 +293,85 @@ export async function restoreProduct(artisanId: string, productId: string): Prom
   if (error) throw new Error(`product restore failed: ${error.message}`);
   if (!data) throw new ProductError('not_found', 'deleted product not found');
   return data as Product;
+}
+
+/* -------------------------------------------------------------- price history */
+
+export interface PriceHistoryRow {
+  id: string;
+  retail_inr: number;
+  wholesale_inr: number;
+  source: 'create' | 'edit' | 'system';
+  changed_at: string;
+}
+
+export interface PriceHistoryEntry extends PriceHistoryRow {
+  /** How much this price differs from the one before it; null for the first price. */
+  retail_change: number | null;
+  wholesale_change: number | null;
+}
+
+export interface PriceHistoryPage {
+  history: PriceHistoryEntry[];
+  /** Pass back as `before` for the next (older) page; null when there is none. */
+  next_before: string | null;
+}
+
+const round2 = (value: number) => Math.round(value * 100) / 100;
+
+/**
+ * Add "how much did it change" to each row. `rows` is newest first, so the row after
+ * a given one is the price it replaced; the last row has nothing to compare with
+ * (it is the first price, or the page was cut and the caller fetched one extra row).
+ */
+export function withChanges(rows: PriceHistoryRow[]): PriceHistoryEntry[] {
+  return rows.map((row, index) => {
+    const older = rows[index + 1];
+    return {
+      ...row,
+      retail_change: older ? round2(row.retail_inr - older.retail_inr) : null,
+      wholesale_change: older ? round2(row.wholesale_inr - older.wholesale_inr) : null,
+    };
+  });
+}
+
+/**
+ * A product's past prices, newest first, paged with a time cursor.
+ *
+ * Ownership is checked FIRST, so another artisan's product has no history to read. The
+ * table's numeric columns arrive as strings, so they are converted. Before migration
+ * 020/021 is applied the table does not exist and the history is simply empty.
+ */
+export async function listPriceHistory(
+  artisanId: string,
+  productId: string,
+  options: { limit: number; before?: string },
+): Promise<PriceHistoryPage> {
+  await requireOwnedProduct(artisanId, productId);
+
+  let builder = supabase()
+    .from('product_price_history')
+    .select('id, retail_inr, wholesale_inr, source, changed_at')
+    .eq('product_id', productId);
+  if (options.before) builder = builder.lt('changed_at', options.before);
+
+  // One extra row tells us whether another page exists, and gives the last row of this
+  // page something to be compared with.
+  const { data, error } = await builder
+    .order('changed_at', { ascending: false })
+    .limit(options.limit + 1);
+
+  if (error) {
+    if (isMissingTable(error)) return { history: [], next_before: null };
+    throw new Error(`price history lookup failed: ${error.message}`);
+  }
+
+  const rows = ((data ?? []) as Array<Omit<PriceHistoryRow, 'retail_inr' | 'wholesale_inr'> & {
+    retail_inr: number | string;
+    wholesale_inr: number | string;
+  }>).map((row) => ({ ...row, retail_inr: Number(row.retail_inr), wholesale_inr: Number(row.wholesale_inr) }));
+
+  const hasMore = rows.length > options.limit;
+  const entries = withChanges(rows).slice(0, options.limit);
+  return { history: entries, next_before: hasMore ? (entries.at(-1)?.changed_at ?? null) : null };
 }

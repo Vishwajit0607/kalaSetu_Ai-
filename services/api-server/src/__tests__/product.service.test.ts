@@ -12,12 +12,14 @@ vi.mock('../services/supabase.service.js', async (importOriginal) => {
 import {
   ProductError,
   getOwnedProduct,
+  listPriceHistory,
   planPhotos,
   productPatchSchema,
   requireOwnedProduct,
   restoreProduct,
   softDeleteProduct,
   updateProduct,
+  withChanges,
 } from '../services/product.service.js';
 
 const ARTISAN = 'aaaaaaaa-0000-0000-0000-000000000001';
@@ -389,5 +391,90 @@ describe('restoreProduct', () => {
   it('does not hide a database failure', async () => {
     db.answer({ error: { code: '08006', message: 'connection failure' } });
     await expect(restoreProduct(ARTISAN, PRODUCT)).rejects.toThrow(/connection failure/);
+  });
+});
+
+/* ------------------------------------------------------------ price history */
+
+const point = (n: number, retail: number, wholesale: number, source = 'edit') => ({
+  id: `h${n}`,
+  retail_inr: String(retail), // numeric columns come back as strings
+  wholesale_inr: String(wholesale),
+  source,
+  changed_at: `2026-11-1${n}T10:00:00.000Z`,
+});
+
+describe('withChanges', () => {
+  const rows = [
+    { id: 'c', retail_inr: 1200, wholesale_inr: 800, source: 'edit' as const, changed_at: '3' },
+    { id: 'b', retail_inr: 1000, wholesale_inr: 800, source: 'edit' as const, changed_at: '2' },
+    { id: 'a', retail_inr: 900, wholesale_inr: 650.5, source: 'create' as const, changed_at: '1' },
+  ];
+
+  it('says how much each price changed from the one it replaced', () => {
+    const out = withChanges(rows);
+    expect(out.map((r) => r.retail_change)).toEqual([200, 100, null]);
+    expect(out.map((r) => r.wholesale_change)).toEqual([0, 149.5, null]);
+  });
+
+  it('has no change for the very first price, or for a single row', () => {
+    expect(withChanges([rows[2]!])[0]).toMatchObject({ retail_change: null, wholesale_change: null });
+    expect(withChanges([])).toEqual([]);
+  });
+
+  it('does not show floating-point noise', () => {
+    const out = withChanges([
+      { id: 'b', retail_inr: 0.3, wholesale_inr: 0.3, source: 'edit', changed_at: '2' },
+      { id: 'a', retail_inr: 0.1, wholesale_inr: 0.1, source: 'create', changed_at: '1' },
+    ]);
+    expect(out[0]!.retail_change).toBe(0.2);
+  });
+});
+
+describe('listPriceHistory', () => {
+  it('checks ownership first, so someone else\'s product has no history to read', async () => {
+    db.answer({ data: null });
+    await expect(listPriceHistory(ARTISAN, PRODUCT, { limit: 10 })).rejects.toMatchObject({ code: 'not_found' });
+    expect(db.allOf('from').map((a) => a[0])).toEqual(['products']); // the history table was never queried
+  });
+
+  it('returns the prices newest first, as numbers, with the change from the previous one', async () => {
+    db.answer({ data: { id: PRODUCT } }, { data: [point(3, 1200, 800), point(2, 1000, 800), point(1, 900, 650, 'create')] });
+    const page = await listPriceHistory(ARTISAN, PRODUCT, { limit: 10 });
+
+    expect(page.history.map((h) => [h.retail_inr, h.retail_change, h.source])).toEqual([
+      [1200, 200, 'edit'],
+      [1000, 100, 'edit'],
+      [900, null, 'create'],
+    ]);
+    expect(page.next_before).toBeNull();
+    expect(db.allOf('eq')).toContainEqual(['product_id', PRODUCT]);
+    expect(db.argsOf('order')).toEqual(['changed_at', { ascending: false }]);
+  });
+
+  it('pages: asks for one extra row, uses it to compare the last row, and returns a cursor', async () => {
+    db.answer({ data: { id: PRODUCT } }, { data: [point(3, 1200, 800), point(2, 1000, 800), point(1, 900, 650, 'create')] });
+    const page = await listPriceHistory(ARTISAN, PRODUCT, { limit: 2 });
+
+    expect(db.argsOf('limit')).toEqual([3]);
+    expect(page.history).toHaveLength(2);
+    expect(page.history[1]).toMatchObject({ retail_inr: 1000, retail_change: 100 }); // compared with the extra, older row
+    expect(page.next_before).toBe(point(2, 0, 0).changed_at);
+  });
+
+  it('continues from a cursor', async () => {
+    db.answer({ data: { id: PRODUCT } }, { data: [] });
+    await listPriceHistory(ARTISAN, PRODUCT, { limit: 5, before: '2026-11-12T10:00:00.000Z' });
+    expect(db.argsOf('lt')).toEqual(['changed_at', '2026-11-12T10:00:00.000Z']);
+  });
+
+  it('is an empty history, not an error, before the migration has created the table', async () => {
+    db.answer({ data: { id: PRODUCT } }, { error: { code: '42P01', message: 'relation "product_price_history" does not exist' } });
+    await expect(listPriceHistory(ARTISAN, PRODUCT, { limit: 5 })).resolves.toEqual({ history: [], next_before: null });
+  });
+
+  it('does not hide a real database failure', async () => {
+    db.answer({ data: { id: PRODUCT } }, { error: { code: '08006', message: 'connection failure' } });
+    await expect(listPriceHistory(ARTISAN, PRODUCT, { limit: 5 })).rejects.toThrow(/connection failure/);
   });
 });

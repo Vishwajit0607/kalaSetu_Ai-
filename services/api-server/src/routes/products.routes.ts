@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import {
   ProductError,
+  listPriceHistory,
   productPatchSchema,
   requireOwnedProduct,
   restoreProduct,
@@ -75,6 +76,26 @@ export const productsRoutes: FastifyPluginAsync = async (fastify) => {
     const { id } = idParams.parse(request.params);
     try {
       return reply.send({ product: await restoreProduct(request.artisanId as string, id) });
+    } catch (error) {
+      return sendProductError(reply, error);
+    }
+  });
+
+  /**
+   * GET /v1/catalog/products/:id/price-history?limit=&before=
+   * The prices this product has had, newest first, with the change from the previous
+   * one. `limit` 1-50 (default 20); `before` is the previous page's `next_before`.
+   */
+  fastify.get<{ Params: { id: string }; Querystring: unknown }>('/:id/price-history', async (request, reply) => {
+    const { id } = idParams.parse(request.params);
+    const query = z
+      .object({
+        limit: z.coerce.number().int().min(1).max(50).default(20),
+        before: z.string().datetime({ offset: true }).optional(),
+      })
+      .parse(request.query);
+    try {
+      return reply.send(await listPriceHistory(request.artisanId as string, id, query));
     } catch (error) {
       return sendProductError(reply, error);
     }
