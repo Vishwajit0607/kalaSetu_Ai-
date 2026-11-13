@@ -3,7 +3,7 @@ import { z } from 'zod';
 import QRCode from 'qrcode';
 import { supabase } from '../services/supabase.service.js';
 import { synthesizeSpeech } from '../services/sarvam.service.js';
-import { adjustStock } from '../services/stockLedger.service.js';
+import { adjustStock, getStockMovements } from '../services/stockLedger.service.js';
 import { InsufficientStockError, ProductNotFoundError } from '../services/pgErrors.js';
 import type { Product, SupportedLanguage } from '../types/index.js';
 import { spokenFor } from '../i18n.js';
@@ -84,6 +84,44 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
         }
         if (err instanceof InsufficientStockError) {
           return reply.badRequest(err.message);
+        }
+        return reply.internalServerError(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  /**
+   * GET /v1/inventory/:productId/movements
+   *
+   * Paginated audit history of stock changes (voice, orders, manual adjustments)
+   * for a product owned by the signed-in artisan.
+   */
+  fastify.get<{ Params: { productId: string }; Querystring: unknown }>(
+    '/:productId/movements',
+    async (request, reply) => {
+      const query = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(20),
+          offset: z.coerce.number().int().min(0).default(0),
+        })
+        .parse(request.query);
+
+      try {
+        const { movements, total } = await getStockMovements(
+          request.params.productId,
+          request.artisanId as string,
+          { limit: query.limit, offset: query.offset },
+        );
+
+        return reply.send({
+          movements,
+          total,
+          limit: query.limit,
+          offset: query.offset,
+        });
+      } catch (err) {
+        if (err instanceof ProductNotFoundError) {
+          return reply.notFound('product not found');
         }
         return reply.internalServerError(err instanceof Error ? err.message : String(err));
       }
