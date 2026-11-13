@@ -142,6 +142,7 @@ describe('route protection', () => {
     ['PATCH', '/v1/inventory/11111111-2222-3333-4444-555555555555/stock'],
     ['GET', '/v1/inventory/11111111-2222-3333-4444-555555555555/qr'],
     ['POST', '/v1/vision/edit'],
+    ['POST', '/v1/vision/media/remove'],
     ['POST', '/v1/catalog/generate'],
     ['POST', '/v1/catalog/products'],
     ['POST', '/v1/catalog/price'],

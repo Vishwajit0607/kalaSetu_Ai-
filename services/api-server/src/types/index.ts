@@ -33,6 +33,8 @@ export interface Product {
   sku: string;
   raw_image_url: string;
   enhanced_image_url: string;
+  /** Extra angles after the cover. Absent on rows created before multi-photo. */
+  gallery_image_urls?: string[];
   voice_note_url: string | null;
   native_transcript: string | null;
   title_en: string;

@@ -1,4 +1,5 @@
 import type { ProductRow } from './apiClient';
+import { productImages } from './gallery';
 
 /**
  * Paper and WhatsApp artefacts built from a catalog.
@@ -29,7 +30,7 @@ export function buildWholesalePitch(product: ProductRow): string {
     '',
     product.description_en.slice(0, 400),
     '',
-    product.enhanced_image_url,
+    ...productImages(product),
     `SKU: ${product.sku}`,
   ]
     .filter(Boolean)
