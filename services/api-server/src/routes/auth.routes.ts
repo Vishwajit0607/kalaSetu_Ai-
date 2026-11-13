@@ -53,7 +53,7 @@ export const AUTH_SPOKEN: Record<AuthError['code'], SpokenKey> = {
 };
 
 /** Turn an AuthError into the same envelope every other error uses. */
-function sendAuthError(
+export function sendAuthError(
   request: Parameters<typeof requestLanguage>[0],
   reply: FastifyReply,
   error: AuthError,
