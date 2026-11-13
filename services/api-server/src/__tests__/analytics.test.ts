@@ -111,8 +111,8 @@ describe('Analytics Service', () => {
 
       const trend = await getStockTrend(artisanId, 7);
       expect(trend.length).toBe(1);
-      expect(trend[0].movement_date).toBe('2026-11-12');
-      expect(trend[0].units_sold_or_removed).toBe(5);
+      expect(trend[0]!.movement_date).toBe('2026-11-12');
+      expect(trend[0]!.units_sold_or_removed).toBe(5);
       expect(db.calls[0]).toEqual(['from', ['v_daily_stock_movements']]);
     });
 
@@ -147,3 +147,4 @@ describe('Analytics Service', () => {
     });
   });
 });
+
