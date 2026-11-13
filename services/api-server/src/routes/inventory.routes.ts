@@ -3,6 +3,8 @@ import { z } from 'zod';
 import QRCode from 'qrcode';
 import { supabase } from '../services/supabase.service.js';
 import { synthesizeSpeech } from '../services/sarvam.service.js';
+import { adjustStock } from '../services/stockLedger.service.js';
+import { InsufficientStockError, ProductNotFoundError } from '../services/pgErrors.js';
 import type { Product, SupportedLanguage } from '../types/index.js';
 import { spokenFor } from '../i18n.js';
 
@@ -33,7 +35,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
     });
   });
 
-  /** PATCH /v1/inventory/:productId/stock - absolute set or relative delta. */
+  /** PATCH /v1/inventory/:productId/stock - atomic set or delta via stock ledger. */
   fastify.patch<{ Params: { productId: string } }>(
     '/:productId/stock',
     async (request, reply) => {
@@ -41,41 +43,49 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
         .object({
           delta: z.number().int().optional(),
           quantity: z.number().int().nonnegative().optional(),
+          reason: z.enum(['voice', 'manual', 'order', 'sync']).default('manual'),
         })
         .refine((v) => v.delta !== undefined || v.quantity !== undefined, {
           message: 'provide either delta or quantity',
         })
         .parse(request.body);
 
-      const { data: current, error: readError } = await supabase()
-        .from('products')
-        .select('id, sku, stock_quantity, title_hi')
-        .eq('id', request.params.productId)
-        .eq('artisan_id', request.artisanId as string)
-        .single();
+      try {
+        const result = await adjustStock({
+          productId: request.params.productId,
+          artisanId: request.artisanId as string,
+          delta: body.delta,
+          setQuantity: body.quantity,
+          reason: body.reason,
+        });
 
-      if (readError || !current) return reply.notFound('product not found');
+        const { data: updatedProduct, error: prodError } = await supabase()
+          .from('products')
+          .select('*')
+          .eq('id', request.params.productId)
+          .eq('artisan_id', request.artisanId as string)
+          .single();
 
-      const next =
-        body.quantity !== undefined
-          ? body.quantity
-          : Math.max(0, Number(current.stock_quantity) + (body.delta ?? 0));
+        if (prodError || !updatedProduct) {
+          return reply.internalServerError(prodError?.message || 'Failed to fetch updated product');
+        }
 
-      const { data, error } = await supabase()
-        .from('products')
-        .update({ stock_quantity: next, updated_at: new Date().toISOString() })
-        .eq('id', request.params.productId)
-        .eq('artisan_id', request.artisanId as string)
-        .select()
-        .single();
-
-      if (error) return reply.internalServerError(error.message);
-
-      return reply.send({
-        product: data,
-        previous_quantity: Number(current.stock_quantity),
-        low_stock: next <= LOW_STOCK_THRESHOLD,
-      });
+        return reply.send({
+          product: updatedProduct,
+          previous_quantity: result.previousQuantity,
+          resulting_quantity: result.resultingQuantity,
+          movement_id: result.movementId,
+          low_stock: result.resultingQuantity <= LOW_STOCK_THRESHOLD,
+        });
+      } catch (err) {
+        if (err instanceof ProductNotFoundError) {
+          return reply.notFound('product not found');
+        }
+        if (err instanceof InsufficientStockError) {
+          return reply.badRequest(err.message);
+        }
+        return reply.internalServerError(err instanceof Error ? err.message : String(err));
+      }
     },
   );
 
