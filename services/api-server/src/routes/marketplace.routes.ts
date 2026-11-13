@@ -331,7 +331,7 @@ export const marketplaceRoutes: FastifyPluginAsync = async (fastify) => {
    *
    * Buyer messages arrive in English or Hindi; each one is translated into the
    * artisan's own language and voiced, because a wholesale inquiry the artisan
-   * cannot read is a lost order.
+   * cannot read is a lost order. Supports status filter and pagination.
    */
   fastify.get<{ Querystring: unknown }>(
     '/inquiries',
@@ -339,16 +339,28 @@ export const marketplaceRoutes: FastifyPluginAsync = async (fastify) => {
       const query = z
         .object({
           language_code: z.string().default('hi-IN'),
-          speak: z.coerce.boolean().default(false),
+          speak: z
+            .union([z.boolean(), z.enum(['true', 'false'])])
+            .transform((val) => val === true || val === 'true')
+            .default(false),
+          status: z.enum(['new', 'replied', 'won', 'lost']).optional(),
+          limit: z.coerce.number().int().min(1).max(100).default(50),
+          offset: z.coerce.number().int().min(0).default(0),
         })
         .parse(request.query);
 
-      const { data, error } = await supabase()
+      let builder = supabase()
         .from('buyer_inquiries')
-        .select('*')
-        .eq('artisan_id', request.artisanId as string)
+        .select('*', { count: 'exact' })
+        .eq('artisan_id', request.artisanId as string);
+
+      if (query.status) {
+        builder = builder.eq('status', query.status);
+      }
+
+      const { data, error, count } = await builder
         .order('created_at', { ascending: false })
-        .limit(50);
+        .range(query.offset, query.offset + query.limit - 1);
 
       if (error) return reply.internalServerError(error.message);
 
@@ -380,7 +392,58 @@ export const marketplaceRoutes: FastifyPluginAsync = async (fastify) => {
         }),
       );
 
-      return reply.send({ inquiries });
+      return reply.send({
+        inquiries,
+        total: count ?? inquiries.length,
+        limit: query.limit,
+        offset: query.offset,
+      });
+    },
+  );
+
+  /**
+   * PATCH /v1/marketplace/inquiries/:id
+   *
+   * Change inquiry workflow status ('new' -> 'replied' -> 'won' | 'lost').
+   * Only the recipient artisan or buyer artisan may update.
+   */
+  fastify.patch<{ Params: { id: string } }>(
+    '/inquiries/:id',
+    async (request, reply) => {
+      const body = z
+        .object({
+          status: z.enum(['new', 'replied', 'won', 'lost']),
+        })
+        .parse(request.body);
+
+      const callerId = request.artisanId as string;
+
+      const { data: existing, error: findErr } = await supabase()
+        .from('buyer_inquiries')
+        .select('*')
+        .eq('id', request.params.id)
+        .maybeSingle();
+
+      if (findErr) return reply.internalServerError(findErr.message);
+      if (!existing) return reply.notFound('inquiry not found');
+
+      if (existing.artisan_id !== callerId && existing.buyer_artisan_id !== callerId) {
+        return reply.forbidden('not allowed to update this inquiry');
+      }
+
+      const { data: updated, error: updateErr } = await supabase()
+        .from('buyer_inquiries')
+        .update({
+          status: body.status,
+          status_updated_at: new Date().toISOString(),
+        })
+        .eq('id', request.params.id)
+        .select('*')
+        .single();
+
+      if (updateErr) return reply.internalServerError(updateErr.message);
+
+      return reply.send({ inquiry: updated });
     },
   );
 
