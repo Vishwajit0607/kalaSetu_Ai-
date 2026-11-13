@@ -118,3 +118,57 @@ export type BackdropPreset =
   | 'warm-sandstone'
   | 'handloom-wood'
   | 'dark-editorial';
+
+
+export type StockMovementReason = 'voice' | 'manual' | 'order' | 'sync';
+
+export interface StockMovement {
+  id: string;
+  product_id: string;
+  artisan_id: string;
+  delta: number;
+  resulting_quantity: number;
+  reason: StockMovementReason;
+  voice_transcript: string | null;
+  created_at: string;
+}
+
+export type InquiryStatus = 'new' | 'replied' | 'won' | 'lost';
+
+export interface BuyerInquiry {
+  id: string;
+  artisan_id: string;
+  buyer_artisan_id?: string | null;
+  product_id: string | null;
+  buyer_name: string;
+  buyer_company?: string | null;
+  buyer_phone?: string | null;
+  channel: 'ondc' | 'gem' | 'b2b';
+  message_text: string;
+  source_language_code?: string;
+  requested_quantity?: number | null;
+  offered_price_inr?: number | null;
+  status: InquiryStatus;
+  status_updated_at?: string;
+  created_at: string;
+}
+
+export interface InventoryAnalyticsSummary {
+  artisan_id: string;
+  total_products: number;
+  total_stock_units: number;
+  total_inventory_value_retail: number;
+  total_inventory_value_wholesale: number;
+  low_stock_count: number;
+  out_of_stock_count: number;
+}
+
+export interface DailyStockMovementTrend {
+  artisan_id: string;
+  movement_date: string;
+  reason: StockMovementReason;
+  movement_count: number;
+  total_delta: number;
+  units_added: number;
+  units_sold_or_removed: number;
+}
