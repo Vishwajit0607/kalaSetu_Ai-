@@ -36,6 +36,11 @@ services:
         value: "22"
       - key: NODE_ENV
         value: production
+      # Render fronts the service with a proxy. Without this every caller looks like the
+      # same address: the audit trail records Render's IP and the per-IP login limit is
+      # shared by all users at once.
+      - key: TRUST_PROXY
+        value: "true"
       # PORT is supplied by Render; the server already reads it and binds 0.0.0.0.
 
       # --- AI vendors (secrets: set in the dashboard) ---------------------------

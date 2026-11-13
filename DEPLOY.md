@@ -62,6 +62,8 @@ Note down these three values; you paste them into Render in Part 2:
    | `SUPABASE_SERVICE_ROLE_KEY` | Supabase, the secret key. **Never put this in the mobile app** |
    | `SUPABASE_PUBLISHABLE_KEY` | Supabase, the publishable key |
 
+   The Blueprint also sets `TRUST_PROXY=true` for you. **If you created the service with Render's manual "New Web Service" form instead, add `TRUST_PROXY` = `true` yourself** (Environment tab). Render puts a proxy in front of the server; without this setting every caller looks like one address, so the audit trail records Render's IP and the login rate limit (10 a minute) is shared by all users at once.
+
 4. Click **Apply**. The first build takes a few minutes. Wait for **Live**.
 5. Copy the service URL (it looks like `https://kalasetu-api.onrender.com`; Render adds a suffix if the name is taken).
 6. Verify it from your terminal:
