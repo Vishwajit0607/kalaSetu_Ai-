@@ -5,12 +5,13 @@ import {
   deleteAccount,
   getArtisan,
   refreshSession,
+  revokeSession,
   signIn,
   signUp,
 } from '../services/auth.service.js';
 import { supabase } from '../services/supabase.service.js';
 import { eventContext, noteFailedLogin, recordAuthEvent } from '../services/audit.service.js';
-import { requestLanguage } from '../plugins/auth.js';
+import { bearerToken, requestLanguage } from '../plugins/auth.js';
 import { spokenFor, type SpokenKey } from '../i18n.js';
 
 /**
@@ -96,6 +97,26 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
       throw error;
     }
+  });
+
+  /**
+   * POST /v1/auth/logout - end this session on the server.
+   * Lives with the other /v1/auth routes but needs a valid token, unlike them.
+   * `all_devices: true` ends every session the artisan has, not just this one.
+   */
+  fastify.post('/logout', { onRequest: fastify.authenticate, config: credentialLimit }, async (request, reply) => {
+    const body = z.object({ all_devices: z.boolean().default(false) }).parse(request.body ?? {});
+    const token = bearerToken(request) as string; // `authenticate` already required it
+
+    try {
+      await revokeSession(token, body.all_devices ? 'global' : 'local');
+    } catch (error) {
+      if (error instanceof AuthError) return sendAuthError(request, reply, error);
+      throw error;
+    }
+
+    void recordAuthEvent(request.artisanId as string, 'logout', eventContext(request));
+    return reply.code(204).send();
   });
 
   fastify.post('/refresh', { config: credentialLimit }, async (request, reply) => {
