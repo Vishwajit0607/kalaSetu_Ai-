@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { normalizePhone } from './auth.service.js';
+import { isMissingTable } from './missingSchema.js';
 import { supabase } from './supabase.service.js';
 
 /**
@@ -64,11 +65,6 @@ export function maskIp(ip: string | null | undefined): string | null {
   return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.x` : null;
 }
 
-/** The migration has not been applied if the table is not there. */
-function tableMissing(error: { code?: string; message?: string }): boolean {
-  return error.code === '42P01' || error.code === 'PGRST205' || /could not find the table|does not exist/i.test(error.message ?? '');
-}
-
 /** Record one event. Never throws; returns whether a row was stored. */
 export async function recordAuthEvent(
   artisanId: string,
@@ -112,7 +108,7 @@ export async function listAuthEvents(
     .limit(options.limit + 1);
 
   if (error) {
-    if (tableMissing(error)) return { events: [], next_before: null };
+    if (isMissingTable(error)) return { events: [], next_before: null };
     throw new Error(`activity lookup failed: ${error.message}`);
   }
 

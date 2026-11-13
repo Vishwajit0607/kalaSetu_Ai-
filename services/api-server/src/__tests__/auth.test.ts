@@ -140,6 +140,7 @@ describe('route protection', () => {
     ['POST', '/v1/auth/logout'],
     ['POST', '/v1/me/password'],
     ['GET', '/v1/me/activity'],
+    ['GET', '/v1/me/export'],
     ['DELETE', '/v1/me'],
     ['GET', '/v1/inventory'],
     ['PATCH', '/v1/inventory/11111111-2222-3333-4444-555555555555/stock'],
