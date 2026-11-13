@@ -304,18 +304,28 @@ const SPOKEN_NUMBERS: Record<string, number> = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
 };
 
+/** Map Devanagari digit characters to their Latin equivalents. */
+function devanagariToLatin(s: string): string {
+  return s.replace(/[०-९]/g, (d) => String(d.codePointAt(0)! - 0x0966));
+}
+
 export function parseStockUtterance(
   transcript: string,
   products: Product[],
 ): { match: Product | null; quantity: number; candidates: Product[] } {
-  const normalized = transcript.toLowerCase().trim();
+  // Normalise: lowercase, convert Devanagari digits (०→0 … ९→9).
+  const normalized = devanagariToLatin(transcript.toLowerCase().trim());
 
-  // Quantity: a digit anywhere, else a spoken numeral, else 1.
-  const digitMatch = normalized.match(/\d+/);
+  // Quantity: a digit sequence anywhere, else a whole-word spoken numeral, else 1.
+  const digitMatch = normalized.match(/[\d]+/);
   let quantity = digitMatch ? Number.parseInt(digitMatch[0], 10) : 0;
   if (!quantity) {
     for (const [word, value] of Object.entries(SPOKEN_NUMBERS)) {
-      if (normalized.includes(word)) {
+      // Use word-boundary matching so "one" doesn't fire inside "phone", etc.
+      const boundary = /\p{L}/u.test(word)
+        ? new RegExp(`(?<![\\p{L}\\p{N}])${word}(?![\\p{L}\\p{N}])`, 'u')
+        : new RegExp(`(?<!\\d)${word}(?!\\d)`);
+      if (boundary.test(normalized)) {
         quantity = value;
         break;
       }
