@@ -159,6 +159,10 @@ export default function RootLayout() {
               name="account/edit-profile"
               options={{ presentation: 'card', animation: 'slide_from_right' }}
             />
+            <Stack.Screen
+              name="account/activity"
+              options={{ presentation: 'card', animation: 'slide_from_right' }}
+            />
           </Stack>
         </QueryClientProvider>
       </SafeAreaProvider>
