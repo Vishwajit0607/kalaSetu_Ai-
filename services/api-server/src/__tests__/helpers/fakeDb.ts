@@ -76,6 +76,10 @@ function makeBuilder(): unknown {
 
 export function fakeSupabase() {
   return {
+    rpc: async (name: string, args: unknown) => {
+      db.calls.push(['rpc', [name, args]]);
+      return db.next();
+    },
     from: (table: string) => {
       db.calls.push(['from', [table]]);
       return makeBuilder();

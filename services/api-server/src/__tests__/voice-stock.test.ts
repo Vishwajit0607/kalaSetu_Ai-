@@ -79,4 +79,21 @@ describe('parseStockUtterance', () => {
     expect(result.match).toBeNull();
     expect(result.candidates.length).toBeGreaterThan(1);
   });
+
+  it('converts Devanagari digit ३ to quantity 3', () => {
+    const result = parseStockUtterance('saree ३ bik gaye', catalog);
+    expect(result.quantity).toBe(3);
+    expect(result.match?.id).toBe('p1');
+  });
+
+  it('does not match "one" inside a longer word like "phone"', () => {
+    // "phone" contains "one" as a substring – should not set quantity to 1 via word match.
+    // The function still defaults to 1 when no other quantity found, so test the
+    // non-match of spoken "nine" inside "sunshine".
+    const result = parseStockUtterance('sunshine saree sold', catalog);
+    // "nine" appears inside "sunshine" – word-boundary guard must prevent false match.
+    // We cannot distinguish quantity=1 (default) from a false nine→9 match by value alone,
+    // so assert it is NOT 9.
+    expect(result.quantity).not.toBe(9);
+  });
 });

@@ -3,6 +3,8 @@ import { z } from 'zod';
 import QRCode from 'qrcode';
 import { supabase } from '../services/supabase.service.js';
 import { synthesizeSpeech } from '../services/sarvam.service.js';
+import { adjustStock, getStockMovements } from '../services/stockLedger.service.js';
+import { InsufficientStockError, ProductNotFoundError } from '../services/pgErrors.js';
 import type { Product, SupportedLanguage } from '../types/index.js';
 import { spokenFor } from '../i18n.js';
 
@@ -17,6 +19,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
       .from('products')
       .select('*')
       .eq('artisan_id', request.artisanId as string)
+      .is('deleted_at', null)
       .order('updated_at', { ascending: false });
 
     if (error) return reply.internalServerError(error.message);
@@ -33,7 +36,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
     });
   });
 
-  /** PATCH /v1/inventory/:productId/stock - absolute set or relative delta. */
+  /** PATCH /v1/inventory/:productId/stock - atomic set or delta via stock ledger. */
   fastify.patch<{ Params: { productId: string } }>(
     '/:productId/stock',
     async (request, reply) => {
@@ -41,41 +44,87 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
         .object({
           delta: z.number().int().optional(),
           quantity: z.number().int().nonnegative().optional(),
+          reason: z.enum(['voice', 'manual', 'order', 'sync']).default('manual'),
         })
         .refine((v) => v.delta !== undefined || v.quantity !== undefined, {
           message: 'provide either delta or quantity',
         })
         .parse(request.body);
 
-      const { data: current, error: readError } = await supabase()
-        .from('products')
-        .select('id, sku, stock_quantity, title_hi')
-        .eq('id', request.params.productId)
-        .eq('artisan_id', request.artisanId as string)
-        .single();
+      try {
+        const result = await adjustStock({
+          productId: request.params.productId,
+          artisanId: request.artisanId as string,
+          delta: body.delta,
+          setQuantity: body.quantity,
+          reason: body.reason,
+        });
 
-      if (readError || !current) return reply.notFound('product not found');
+        const { data: updatedProduct, error: prodError } = await supabase()
+          .from('products')
+          .select('*')
+          .eq('id', request.params.productId)
+          .eq('artisan_id', request.artisanId as string)
+          .single();
 
-      const next =
-        body.quantity !== undefined
-          ? body.quantity
-          : Math.max(0, Number(current.stock_quantity) + (body.delta ?? 0));
+        if (prodError || !updatedProduct) {
+          return reply.internalServerError(prodError?.message || 'Failed to fetch updated product');
+        }
 
-      const { data, error } = await supabase()
-        .from('products')
-        .update({ stock_quantity: next, updated_at: new Date().toISOString() })
-        .eq('id', request.params.productId)
-        .eq('artisan_id', request.artisanId as string)
-        .select()
-        .single();
+        return reply.send({
+          product: updatedProduct,
+          previous_quantity: result.previousQuantity,
+          resulting_quantity: result.resultingQuantity,
+          movement_id: result.movementId,
+          low_stock: result.resultingQuantity <= LOW_STOCK_THRESHOLD,
+        });
+      } catch (err) {
+        if (err instanceof ProductNotFoundError) {
+          return reply.notFound('product not found');
+        }
+        if (err instanceof InsufficientStockError) {
+          return reply.badRequest(err.message);
+        }
+        return reply.internalServerError(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
 
-      if (error) return reply.internalServerError(error.message);
+  /**
+   * GET /v1/inventory/:productId/movements
+   *
+   * Paginated audit history of stock changes (voice, orders, manual adjustments)
+   * for a product owned by the signed-in artisan.
+   */
+  fastify.get<{ Params: { productId: string }; Querystring: unknown }>(
+    '/:productId/movements',
+    async (request, reply) => {
+      const query = z
+        .object({
+          limit: z.coerce.number().int().min(1).max(100).default(20),
+          offset: z.coerce.number().int().min(0).default(0),
+        })
+        .parse(request.query);
 
-      return reply.send({
-        product: data,
-        previous_quantity: Number(current.stock_quantity),
-        low_stock: next <= LOW_STOCK_THRESHOLD,
-      });
+      try {
+        const { movements, total } = await getStockMovements(
+          request.params.productId,
+          request.artisanId as string,
+          { limit: query.limit, offset: query.offset },
+        );
+
+        return reply.send({
+          movements,
+          total,
+          limit: query.limit,
+          offset: query.offset,
+        });
+      } catch (err) {
+        if (err instanceof ProductNotFoundError) {
+          return reply.notFound('product not found');
+        }
+        return reply.internalServerError(err instanceof Error ? err.message : String(err));
+      }
     },
   );
 
@@ -97,7 +146,8 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
     const { data, error } = await supabase()
       .from('products')
       .select('*')
-      .eq('artisan_id', request.artisanId as string);
+      .eq('artisan_id', request.artisanId as string)
+      .is('deleted_at', null);
 
     if (error) return reply.internalServerError(error.message);
 
@@ -111,36 +161,44 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    const next = Math.max(0, parsed.match.stock_quantity - parsed.quantity);
-    const { error: updateError } = await supabase()
-      .from('products')
-      .update({ stock_quantity: next, updated_at: new Date().toISOString() })
-      .eq('id', parsed.match.id)
-      .eq('artisan_id', request.artisanId as string);
+    try {
+      const ledgerResult = await adjustStock({
+        productId: parsed.match.id,
+        artisanId: request.artisanId as string,
+        delta: -parsed.quantity,
+        reason: 'voice',
+        voiceTranscript: body.transcript,
+      });
 
-    if (updateError) return reply.internalServerError(updateError.message);
+      const next = ledgerResult.resultingQuantity;
+      const spoken = spokenFor(body.language_code);
+      // Read the product's title back in the same language as the sentence
+      // around it - a Hindi title inside an English sentence is unreadable to
+      // a text-to-speech voice.
+      const spokenTitle =
+        body.language_code === 'en-IN' ? parsed.match.title_en : parsed.match.title_hi;
 
-    const spoken = spokenFor(body.language_code);
-    // Read the product's title back in the same language as the sentence
-    // around it - a Hindi title inside an English sentence is unreadable to
-    // a text-to-speech voice.
-    const spokenTitle =
-      body.language_code === 'en-IN' ? parsed.match.title_en : parsed.match.title_hi;
+      const confirmation =
+        next <= LOW_STOCK_THRESHOLD
+          ? spoken('stock.reducedLow', { qty: parsed.quantity, title: spokenTitle, left: next })
+          : spoken('stock.reduced', { qty: parsed.quantity, title: spokenTitle, left: next });
 
-    const confirmation =
-      next <= LOW_STOCK_THRESHOLD
-        ? spoken('stock.reducedLow', { qty: parsed.quantity, title: spokenTitle, left: next })
-        : spoken('stock.reduced', { qty: parsed.quantity, title: spokenTitle, left: next });
-
-    return reply.send({
-      matched: true,
-      product_id: parsed.match.id,
-      sku: parsed.match.sku,
-      quantity_sold: parsed.quantity,
-      stock_quantity: next,
-      low_stock: next <= LOW_STOCK_THRESHOLD,
-      spoken_confirmation: confirmation,
-    });
+      return reply.send({
+        matched: true,
+        product_id: parsed.match.id,
+        sku: parsed.match.sku,
+        quantity_sold: parsed.quantity,
+        stock_quantity: next,
+        movement_id: ledgerResult.movementId,
+        low_stock: next <= LOW_STOCK_THRESHOLD,
+        spoken_confirmation: confirmation,
+      });
+    } catch (err) {
+      if (err instanceof InsufficientStockError) {
+        return reply.badRequest(err.message);
+      }
+      return reply.internalServerError(err instanceof Error ? err.message : String(err));
+    }
   });
 
   /** GET /v1/inventory/:productId/qr - printable trade-fair tag (PNG data URL). */
@@ -158,6 +216,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
         // Scoped to the caller: without this, any product id from any artisan
         // returned its SKU and prices.
         .eq('artisan_id', request.artisanId as string)
+        .is('deleted_at', null)
         .maybeSingle();
 
       if (error || !data) return reply.notFound('product not found');
@@ -192,6 +251,7 @@ export const inventoryRoutes: FastifyPluginAsync = async (fastify) => {
       .from('products')
       .select('sku, title_hi, title_en, stock_quantity')
       .eq('artisan_id', request.artisanId as string)
+      .is('deleted_at', null)
       .lte('stock_quantity', LOW_STOCK_THRESHOLD);
 
     if (error) return reply.internalServerError(error.message);
@@ -244,18 +304,28 @@ const SPOKEN_NUMBERS: Record<string, number> = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
 };
 
+/** Map Devanagari digit characters to their Latin equivalents. */
+function devanagariToLatin(s: string): string {
+  return s.replace(/[०-९]/g, (d) => String(d.codePointAt(0)! - 0x0966));
+}
+
 export function parseStockUtterance(
   transcript: string,
   products: Product[],
 ): { match: Product | null; quantity: number; candidates: Product[] } {
-  const normalized = transcript.toLowerCase().trim();
+  // Normalise: lowercase, convert Devanagari digits (०→0 … ९→9).
+  const normalized = devanagariToLatin(transcript.toLowerCase().trim());
 
-  // Quantity: a digit anywhere, else a spoken numeral, else 1.
-  const digitMatch = normalized.match(/\d+/);
+  // Quantity: a digit sequence anywhere, else a whole-word spoken numeral, else 1.
+  const digitMatch = normalized.match(/[\d]+/);
   let quantity = digitMatch ? Number.parseInt(digitMatch[0], 10) : 0;
   if (!quantity) {
     for (const [word, value] of Object.entries(SPOKEN_NUMBERS)) {
-      if (normalized.includes(word)) {
+      // Use word-boundary matching so "one" doesn't fire inside "phone", etc.
+      const boundary = /\p{L}/u.test(word)
+        ? new RegExp(`(?<![\\p{L}\\p{N}])${word}(?![\\p{L}\\p{N}])`, 'u')
+        : new RegExp(`(?<!\\d)${word}(?!\\d)`);
+      if (boundary.test(normalized)) {
         quantity = value;
         break;
       }
