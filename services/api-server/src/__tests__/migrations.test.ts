@@ -24,6 +24,16 @@ describe('sortMigrationNames', () => {
   });
 });
 
+describe('the lint itself', () => {
+  const strip = (sql: string) => sql.replace(/--.*$/gm, '').replace(/\b(REVOKE|GRANT)\b[^;]*;/gi, '');
+
+  it('lets a REVOKE of the TRUNCATE privilege through, but still catches a real TRUNCATE', () => {
+    expect(strip('REVOKE INSERT, TRUNCATE ON t FROM anon;')).not.toMatch(/\bTRUNCATE\b/i);
+    expect(strip('TRUNCATE products;')).toMatch(/\bTRUNCATE\b/i);
+    expect(strip('-- TRUNCATE is dangerous\nSELECT 1;')).not.toMatch(/TRUNCATE/i);
+  });
+});
+
 describe('the real migrations folder', () => {
   it('has no file that looks like a migration but breaks the naming rule', async () => {
     const { readdir } = await import('node:fs/promises');
@@ -39,8 +49,12 @@ describe('the real migrations folder', () => {
 
   it('is safe to run twice and never destructive', async () => {
     for (const name of await listMigrationFiles(FOLDER)) {
-      // Strip comments so a warning in a comment does not trip the check.
-      const sql = (await readFile(new URL(name, FOLDER), 'utf8')).replace(/--.*$/gm, '');
+      // Strip comments so a warning in a comment does not trip the check, and
+      // GRANT/REVOKE statements: `REVOKE ... TRUNCATE` removes a privilege, it does
+      // not truncate anything.
+      const sql = (await readFile(new URL(name, FOLDER), 'utf8'))
+        .replace(/--.*$/gm, '')
+        .replace(/\b(REVOKE|GRANT)\b[^;]*;/gi, '');
 
       expect(sql, `${name}: destructive statement`).not.toMatch(/\b(DROP\s+TABLE|TRUNCATE|DELETE\s+FROM)\b/i);
       expect(sql, `${name}: plain CREATE TABLE`).not.toMatch(/CREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS)/i);
