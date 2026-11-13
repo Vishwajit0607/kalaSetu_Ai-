@@ -8,6 +8,7 @@ import { loadEnv } from './config/env.js';
 import errorHandler from './plugins/error-handler.js';
 import authPlugin from './plugins/auth.js';
 import { authRoutes, meRoutes } from './routes/auth.routes.js';
+import { accountRoutes } from './routes/account.routes.js';
 import { visionRoutes } from './routes/vision.routes.js';
 import { speechRoutes } from './routes/speech.routes.js';
 import { catalogRoutes } from './routes/catalog.routes.js';
@@ -71,6 +72,7 @@ export async function buildServer() {
   await fastify.register(async (scope) => {
     scope.addHook('onRequest', scope.authenticate);
     await scope.register(meRoutes, { prefix: '/v1/me' });
+    await scope.register(accountRoutes, { prefix: '/v1/me' });
     await scope.register(visionRoutes, { prefix: '/v1/vision' });
     await scope.register(catalogRoutes, { prefix: '/v1/catalog' });
     await scope.register(inventoryRoutes, { prefix: '/v1/inventory' });
