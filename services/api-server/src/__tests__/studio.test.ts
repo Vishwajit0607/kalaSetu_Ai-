@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
 import { resetEnvCache } from '../config/env.js';
 import { UpstreamError } from '../services/http.js';
@@ -109,6 +109,31 @@ describe('editStudioPhoto engine selection', () => {
   it('STUDIO_ENGINE=photoroom does not fall back', async () => {
     process.env.STUDIO_ENGINE = 'photoroom';
     resetEnvCache();
+    photoroom.mockRejectedValue(new UpstreamError('photoroom', 402, 'no credits'));
+    await expect(editStudioPhoto(await params())).rejects.toBeInstanceOf(UpstreamError);
+  });
+});
+
+describe('localStudioEdit memory guard', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('declines on a container too small for the segmentation model (it would be OOM-killed)', async () => {
+    vi.spyOn(process, 'constrainedMemory').mockReturnValue(512 * 1024 * 1024);
+    await expect(
+      localStudioEdit({ imageBuffer: await sampleJpeg(), backdrop: 'marketplace-white', relight: false, shadow: false, size: 400 }),
+    ).rejects.toMatchObject({ vendor: 'local-studio', status: 503 });
+  });
+
+  it('runs on a 2 GB container, and where no limit is reported', async () => {
+    for (const limit of [2048 * 1024 * 1024, 0]) {
+      vi.spyOn(process, 'constrainedMemory').mockReturnValue(limit);
+      const out = await localStudioEdit({ imageBuffer: await sampleJpeg(), backdrop: 'marketplace-white', relight: false, shadow: false, size: 400 });
+      expect(out.contentType).toBe('image/jpeg');
+    }
+  });
+
+  it('on a small instance the whole studio degrades to the original instead of crashing', async () => {
+    vi.spyOn(process, 'constrainedMemory').mockReturnValue(512 * 1024 * 1024);
     photoroom.mockRejectedValue(new UpstreamError('photoroom', 402, 'no credits'));
     await expect(editStudioPhoto(await params())).rejects.toBeInstanceOf(UpstreamError);
   });

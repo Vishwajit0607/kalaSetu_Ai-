@@ -52,7 +52,8 @@ const PADDING = 0.08;
 const SEGMENT_EDGE = 1280;
 
 /**
- * Background removal is CPU-heavy (~3 s, ~400 MB peak). One at a time, with a
+ * Background removal is CPU-heavy (~2-4 s) and memory-heavy (measured peak
+ * resident memory ~1.4 GB). One at a time, with a
  * short queue; beyond that we shed load - the route then returns the original
  * photo, flagged, instead of letting a burst of uploads exhaust the machine.
  */
@@ -60,6 +61,21 @@ const MAX_CONCURRENT = 1;
 const MAX_QUEUED = 4;
 let running = 0;
 const waiting: Array<() => void> = [];
+
+/**
+ * The segmentation model peaks around 1.4 GB, so a small container (a 512 MB
+ * Render instance) would be killed by the OS on the first photo - taking every
+ * other request down with it. Instead the engine declines, and the route hands
+ * the original photo back flagged. `process.constrainedMemory()` reads the
+ * container's own limit; it is 0 (no limit) on a laptop or a big VM.
+ */
+const DEFAULT_MIN_MEMORY_MB = 1800;
+
+export function localEngineFitsInMemory(): boolean {
+  const limit = process.constrainedMemory?.() ?? 0;
+  const needed = (Number(process.env.STUDIO_LOCAL_MIN_MEMORY_MB) || DEFAULT_MIN_MEMORY_MB) * 1024 * 1024;
+  return limit === 0 || limit >= needed;
+}
 
 async function acquire(): Promise<void> {
   if (running < MAX_CONCURRENT) {
@@ -207,6 +223,14 @@ export async function localStudioEdit(params: LocalStudioParams): Promise<LocalS
   const size = params.size ?? 1600;
   const color = BACKDROP_COLOR[params.backdrop];
   const applied = ['background-removal'];
+
+  if (!localEngineFitsInMemory()) {
+    throw new UpstreamError(
+      'local-studio',
+      503,
+      'the built-in studio needs about 1.8 GB of memory and this instance has less',
+    );
+  }
 
   await acquire();
   let cutout: Buffer;

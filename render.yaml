@@ -1,0 +1,86 @@
+# Render Blueprint for the KalaSetu API (services/api-server).
+#
+# Render reads this from the repo root. Secrets are NOT stored here: every key
+# marked `sync: false` is asked for once in the Render dashboard.
+#
+# The repo is an npm-workspaces monorepo, so Render builds from the repo ROOT
+# (it needs the root package-lock.json) and the commands name the workspace.
+
+services:
+  - type: web
+    name: kalasetu-api
+    runtime: node
+    region: singapore          # closest Render region to India
+    branch: main
+    autoDeploy: true
+
+    # `free` sleeps after 15 min idle (first request then takes ~30-60 s) and has
+    # 512 MB of memory. See the STUDIO_ENGINE note below before changing it.
+    plan: free
+
+    # --include=dev: the build needs TypeScript, which is a devDependency.
+    buildCommand: npm ci --include=dev && npm run build --workspace=@kalasetu/api-server
+    startCommand: npm run start --workspace=@kalasetu/api-server
+    healthCheckPath: /health
+
+    # Only rebuild when the API (or the lockfile) changes, not on mobile edits.
+    buildFilter:
+      paths:
+        - services/api-server/**
+        - package.json
+        - package-lock.json
+        - render.yaml
+
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # PORT is supplied by Render; the server already reads it and binds 0.0.0.0.
+
+      # --- AI vendors (secrets: set in the dashboard) ---------------------------
+      - key: PHOTOROOM_API_KEY
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BHARATCODE_API_KEY      # optional fallback LLM; leave blank to skip
+        sync: false
+
+      # --- Supabase (secrets: set in the dashboard) -----------------------------
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+
+      # --- Non-secret settings --------------------------------------------------
+      - key: SUPABASE_STORAGE_BUCKET
+        value: kalasetu-media
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: BHARATCODE_BASE_URL
+        value: https://bharatcode.ai/api/model/v1
+      - key: BHARATCODE_MODEL
+        value: qwen-3.8-27b
+
+      # Studio photos. `auto` = Photoroom, falling back to the free built-in
+      # engine. That engine peaks at ~1.4 GB of memory, so on a 512 MB instance
+      # it declines on its own (the app then gets the original photo, flagged)
+      # instead of crashing the server. For the built-in engine to actually run,
+      # change `plan` above to `standard` (2 GB). To never call Photoroom, set
+      # this to `local`; to never fall back, `photoroom`.
+      - key: STUDIO_ENGINE
+        value: auto
+
+      # Pricing defaults (INR)
+      - key: SKILL_RATE_INR_PER_HOUR
+        value: "95"
+      - key: PACKAGING_COST_INR
+        value: "45"
+      - key: WHOLESALE_MARGIN
+        value: "0.28"
+      - key: RETAIL_MARGIN
+        value: "0.95"

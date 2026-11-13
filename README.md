@@ -420,7 +420,7 @@ IP (40/min vs 240/min signed in) since every call spends Sarvam credits.
 | Engine | What it does | Cost |
 | --- | --- | --- |
 | **Photoroom** | Segmentation, AI relight, physically placed shadow, 1600px PNG | Paid credits |
-| **Built-in** (`local-studio.service.ts`) | Background removal in-process (`@imgly/background-removal-node`, ONNX), tone lift only as far as the photo needs, product centred on a square backdrop with a soft drop shadow, 1600px JPEG | Free; ~3 s and ~400 MB per photo |
+| **Built-in** (`local-studio.service.ts`) | Background removal in-process (`@imgly/background-removal-node`, ONNX), tone lift only as far as the photo needs, product centred on a square backdrop with a soft drop shadow, 1600px JPEG | Free; ~2-4 s and **~1.4 GB peak memory** per photo (needs a 2 GB instance; on a smaller one it declines and the original photo is returned, flagged) |
 
 The built-in engine is an approximation, not a clone: the cutout is good, but the
 lighting is a global tone correction and the shadow is a blurred silhouette. Set
