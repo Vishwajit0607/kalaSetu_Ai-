@@ -224,6 +224,23 @@ export async function refreshSession(refreshToken: string): Promise<Session> {
   return toSession(result.data.session);
 }
 
+/* ----------------------------------------------------------------- logout */
+
+/**
+ * End the caller's session on the server, so the refresh token stops working too.
+ *
+ * Just forgetting the token on the phone (what logout used to do) leaves a stolen
+ * or lost copy of that session alive until it expires. `local` ends only the
+ * session this token belongs to, so logging out on one phone does not log the
+ * artisan out of another; `global` ends every session they have.
+ */
+export async function revokeSession(accessToken: string, scope: 'local' | 'global'): Promise<void> {
+  const { error } = await supabase().auth.admin.signOut(accessToken, scope);
+  if (error) {
+    throw new AuthError(502, 'upstream', `Could not end the session: ${error.message}`);
+  }
+}
+
 /* ---------------------------------------------------------------- profile */
 
 export async function getArtisan(id: string): Promise<Artisan | null> {

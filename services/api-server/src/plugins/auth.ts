@@ -23,7 +23,8 @@ declare module 'fastify' {
   }
 }
 
-function bearerToken(request: FastifyRequest): string | null {
+/** The token from `Authorization: Bearer <token>`, or null. */
+export function bearerToken(request: Pick<FastifyRequest, 'headers'>): string | null {
   const header = request.headers.authorization;
   if (!header) return null;
   const [scheme, token] = header.split(' ');
