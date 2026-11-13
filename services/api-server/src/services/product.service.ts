@@ -1,0 +1,295 @@
+import { z } from 'zod';
+import { removeMedia, storagePathFromUrl, supabase } from './supabase.service.js';
+import { MAX_GALLERY, cleanGallery } from './gallery.js';
+import type { DimensionsCm, Product } from '../types/index.js';
+
+/**
+ * Looking after a saved product: reading it, editing it, deleting and restoring it,
+ * and its price history.
+ *
+ * Every function takes the artisan id as its first argument and filters by it. That id
+ * comes from the verified login token (never from the request), so a product that is
+ * not the caller's is indistinguishable from one that does not exist: both are
+ * "not found", and nothing about someone else's catalog leaks.
+ */
+
+export class ProductError extends Error {
+  constructor(
+    readonly code: 'not_found' | 'invalid',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ProductError';
+  }
+}
+
+/**
+ * One product, only if it belongs to this artisan. A soft-deleted product counts as
+ * missing unless `includeDeleted` is set (restoring needs to see it).
+ */
+export async function getOwnedProduct(
+  artisanId: string,
+  productId: string,
+  options: { includeDeleted?: boolean } = {},
+): Promise<Product | null> {
+  let builder = supabase()
+    .from('products')
+    .select('*')
+    .eq('id', productId)
+    .eq('artisan_id', artisanId);
+  if (!options.includeDeleted) builder = builder.is('deleted_at', null);
+
+  const { data, error } = await builder.maybeSingle();
+  if (error) throw new Error(`product lookup failed: ${error.message}`);
+  return (data as Product | null) ?? null;
+}
+
+/** Like `getOwnedProduct`, but a missing product is an error the route turns into a 404. */
+export async function requireOwnedProduct(
+  artisanId: string,
+  productId: string,
+  options: { includeDeleted?: boolean } = {},
+): Promise<Product> {
+  const product = await getOwnedProduct(artisanId, productId, options);
+  if (!product) throw new ProductError('not_found', 'product not found');
+  return product;
+}
+
+/* ------------------------------------------------------------------- editing */
+
+/** Matches the column widths (NUMERIC(10,2), NUMERIC(6,1)) so an overflow is a 400, not a 500. */
+const MAX_MONEY = 10_000_000;
+
+const dimensionsPatch = z
+  .object({
+    length: z.number().positive().max(100_000).optional(),
+    width: z.number().positive().max(100_000).optional(),
+    height: z.number().nonnegative().max(100_000).optional(),
+    weight_grams: z.number().nonnegative().max(10_000_000).optional(),
+  })
+  .strict()
+  .refine((d) => Object.keys(d).length > 0, { message: 'dimensions_cm must change at least one measurement' });
+
+/**
+ * The fields an artisan may change on a saved product.
+ *
+ * STRICT: any other key is refused, not ignored. That is what keeps `stock_quantity`
+ * out (stock belongs to the inventory ledger, so every stock change leaves an audit
+ * row), and it also refuses `artisan_id`, `sku`, `raw_image_url` and `deleted_at`, so a
+ * request cannot reassign a product, rename its SKU or undelete it by the back door.
+ */
+export const productPatchSchema = z
+  .object({
+    title_en: z.string().trim().min(1).max(200).optional(),
+    title_hi: z.string().trim().min(1).max(200).optional(),
+    description_en: z.string().trim().max(5000).optional(),
+    description_hi: z.string().trim().max(5000).optional(),
+    seo_tags: z
+      .array(z.string().trim().min(1).max(40))
+      .max(30)
+      // Tags are search keywords: one spelling each, so "Silk" and "silk" are the same tag.
+      .transform((tags) => [...new Set(tags.map((tag) => tag.toLowerCase()))])
+      .optional(),
+    hsn_code: z.string().trim().max(20).nullable().optional(),
+    material_cost_inr: z.number().nonnegative().max(MAX_MONEY).optional(),
+    labor_hours: z.number().nonnegative().max(1000).optional(),
+    dimensions_cm: dimensionsPatch.optional(),
+    recommended_retail_inr: z.number().positive().max(MAX_MONEY).optional(),
+    recommended_wholesale_inr: z.number().positive().max(MAX_MONEY).optional(),
+    min_wholesale_qty: z.number().int().positive().max(100_000).optional(),
+    /** Make one of this product's extra photos the cover. See planPhotos. */
+    cover_image_url: z.string().url().optional(),
+    /** The extras to keep, in the order to show them: reorders, and removes any left out. */
+    gallery_image_urls: z.array(z.string().url()).max(MAX_GALLERY).optional(),
+  })
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, { message: 'send at least one field to change' });
+
+export type ProductPatch = z.infer<typeof productPatchSchema>;
+
+/* -------------------------------------------------------------------- photos */
+
+export interface PhotoState {
+  enhanced_image_url: string;
+  gallery_image_urls?: string[] | null;
+}
+
+export interface PhotoPlan {
+  /** The cover after the change. */
+  enhanced_image_url: string;
+  /** The extras after the change, in display order, never containing the cover. */
+  gallery_image_urls: string[];
+  /** Photos that are no longer part of the product and can be deleted from storage. */
+  removed: string[];
+}
+
+/**
+ * Work out a product's photos after a reorder, a removal and/or a cover promotion.
+ * Pure: no database, so every case is cheap to test.
+ *
+ * The one rule that matters: an edit can only REARRANGE photos the product already
+ * has. It cannot introduce a URL, so it cannot attach someone else's photo or an
+ * arbitrary link; new photos only ever come in through the studio, which checks they
+ * were uploaded by this artisan.
+ *
+ *  - `gallery_image_urls` is the extras to keep, in the order wanted. Anything left out
+ *    is removed.
+ *  - `cover_image_url` promotes one of the extras. The old cover takes the promoted
+ *    photo's place in the list, so no photo is lost and the count stays the same.
+ *  - Reordering/removing is applied first, then the promotion, so a request can do both.
+ */
+export function planPhotos(
+  current: PhotoState,
+  request: { cover_image_url?: string; gallery_image_urls?: string[] },
+): PhotoPlan {
+  const currentGallery = cleanGallery(current.enhanced_image_url, current.gallery_image_urls ?? []);
+  let gallery = [...currentGallery];
+
+  if (request.gallery_image_urls) {
+    const wanted = request.gallery_image_urls;
+    if (new Set(wanted).size !== wanted.length) {
+      throw new ProductError('invalid', 'the same photo is listed twice');
+    }
+    for (const url of wanted) {
+      if (!currentGallery.includes(url)) {
+        throw new ProductError('invalid', 'gallery_image_urls can only contain photos this product already has');
+      }
+    }
+    gallery = wanted;
+  }
+
+  let cover = current.enhanced_image_url;
+  if (request.cover_image_url && request.cover_image_url !== cover) {
+    const at = gallery.indexOf(request.cover_image_url);
+    if (at === -1) {
+      throw new ProductError('invalid', 'the new cover must be one of this product\'s extra photos');
+    }
+    gallery = gallery.map((url, index) => (index === at ? cover : url));
+    cover = request.cover_image_url;
+  }
+
+  return {
+    enhanced_image_url: cover,
+    gallery_image_urls: gallery,
+    removed: currentGallery.filter((url) => !gallery.includes(url) && url !== cover),
+  };
+}
+
+/**
+ * Change some of a product's fields. Returns the updated product.
+ *
+ * Measurements merge into the existing ones (changing the length keeps the width).
+ * Retail must stay above wholesale: that is checked against the values the product will
+ * END UP with, so changing only one of the two prices cannot sneak past it.
+ */
+export async function updateProduct(
+  artisanId: string,
+  productId: string,
+  patch: ProductPatch,
+): Promise<Product> {
+  const existing = await requireOwnedProduct(artisanId, productId);
+
+  const retail = patch.recommended_retail_inr ?? Number(existing.recommended_retail_inr);
+  const wholesale = patch.recommended_wholesale_inr ?? Number(existing.recommended_wholesale_inr);
+  if (
+    (patch.recommended_retail_inr !== undefined || patch.recommended_wholesale_inr !== undefined) &&
+    retail <= wholesale
+  ) {
+    throw new ProductError('invalid', 'the retail price must be higher than the wholesale price');
+  }
+
+  const { dimensions_cm, cover_image_url, gallery_image_urls, ...rest } = patch;
+  const row: Record<string, unknown> = { ...rest, updated_at: new Date().toISOString() };
+
+  let removedPhotos: string[] = [];
+  if (cover_image_url !== undefined || gallery_image_urls !== undefined) {
+    const plan = planPhotos(existing, { cover_image_url, gallery_image_urls });
+    removedPhotos = plan.removed;
+    if (plan.enhanced_image_url !== existing.enhanced_image_url) {
+      row.enhanced_image_url = plan.enhanced_image_url;
+    }
+    // Only written when it really changed: a database that has not had the gallery
+    // migration has no such column, and an unchanged list must not make this fail.
+    const before = cleanGallery(existing.enhanced_image_url, existing.gallery_image_urls ?? []);
+    if (JSON.stringify(plan.gallery_image_urls) !== JSON.stringify(before)) {
+      row.gallery_image_urls = plan.gallery_image_urls;
+    }
+  }
+  if (dimensions_cm) {
+    row.dimensions_cm = { ...existing.dimensions_cm, ...dimensions_cm } satisfies DimensionsCm;
+  }
+
+  const { data, error } = await supabase()
+    .from('products')
+    .update(row)
+    .eq('id', productId)
+    .eq('artisan_id', artisanId)
+    // Not if it was deleted between the read above and this write.
+    .is('deleted_at', null)
+    .select('*')
+    .maybeSingle();
+
+  if (error) throw new Error(`product update failed: ${error.message}`);
+  if (!data) throw new ProductError('not_found', 'product not found');
+
+  await discardPhotos(artisanId, removedPhotos);
+  return data as Product;
+}
+
+/**
+ * Delete photos that left the product from storage. Only after the product row has
+ * been saved without them, and only the caller's own files. Best effort: a leftover
+ * file costs a little storage, but failing the edit over it would be worse.
+ */
+async function discardPhotos(artisanId: string, urls: string[]): Promise<void> {
+  const paths = urls
+    .map((url) => storagePathFromUrl(url, artisanId))
+    .filter((path): path is string => path !== null);
+  if (paths.length === 0) return;
+  await removeMedia(paths).catch(() => undefined);
+}
+
+/* ------------------------------------------------------------ delete / restore */
+
+/**
+ * Delete a product, reversibly: it is hidden, not removed. The row, its photos and its
+ * price history all stay, so an accidental delete can be undone and nothing that points
+ * at the product breaks.
+ *
+ * Only an existing, not-already-deleted product of the caller's can be deleted; anything
+ * else (someone else's, missing, already deleted) is "not found".
+ */
+export async function softDeleteProduct(
+  artisanId: string,
+  productId: string,
+): Promise<{ id: string; deleted_at: string }> {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase()
+    .from('products')
+    .update({ deleted_at: now, updated_at: now })
+    .eq('id', productId)
+    .eq('artisan_id', artisanId)
+    .is('deleted_at', null)
+    .select('id, deleted_at')
+    .maybeSingle();
+
+  if (error) throw new Error(`product delete failed: ${error.message}`);
+  if (!data) throw new ProductError('not_found', 'product not found');
+  return data as { id: string; deleted_at: string };
+}
+
+/** Undo a delete. Only a product that IS deleted, and is the caller's, can be restored. */
+export async function restoreProduct(artisanId: string, productId: string): Promise<Product> {
+  const { data, error } = await supabase()
+    .from('products')
+    .update({ deleted_at: null, updated_at: new Date().toISOString() })
+    .eq('id', productId)
+    .eq('artisan_id', artisanId)
+    .not('deleted_at', 'is', null)
+    .select('*')
+    .maybeSingle();
+
+  if (error) throw new Error(`product restore failed: ${error.message}`);
+  if (!data) throw new ProductError('not_found', 'deleted product not found');
+  return data as Product;
+}

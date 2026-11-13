@@ -50,6 +50,8 @@ export interface Product {
   recommended_wholesale_inr: number;
   min_wholesale_qty: number;
   stock_quantity: number;
+  /** Set when the product was soft-deleted; such a product is hidden everywhere. */
+  deleted_at?: string | null;
   marketplace_sync_status: MarketplaceSyncStatus;
   updated_at: string;
 }
